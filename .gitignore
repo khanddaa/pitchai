@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# Node
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# ML data (том файл)
+ml/data/
+ml/models/
+
+# OS
+.DS_Store
+bun.lock
+bun.lockb
