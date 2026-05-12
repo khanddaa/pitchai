@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { FileText, AlertTriangle, Activity, Database, Save, RefreshCw, CheckCircle, XCircle, Cpu, BarChart3, Clock, Upload } from "lucide-react";
+import { API_URL } from "@/lib/api";
 import { toast } from "sonner";
 
 const DARK   = "#1A1143";
@@ -32,7 +33,7 @@ interface ApiHistoryItem {
   created_at: string;
 }
 
-const API = (import.meta as any).env?.VITE_API_URL || "http://localhost:8000";
+const API = API_URL;
 
 function apiToHistoryItem(r: ApiHistoryItem): HistoryItem {
   return {

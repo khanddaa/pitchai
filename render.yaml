@@ -30,3 +30,9 @@ services:
     buildCommand: npm install && npm run build
     staticPublishPath: dist
     plan: free
+    envVars:
+      - key: VITE_API_URL
+        fromService:
+          name: pitchai-backend
+          type: web
+          property: host

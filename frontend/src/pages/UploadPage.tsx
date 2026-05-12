@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { DARK, PURPLE, FONT, CATEGORIES } from "@/constants";
+import { API_URL } from "@/lib/api";
 
 const fmtMB = (b: number) => (b / 1024 / 1024).toFixed(1);
 
@@ -52,7 +53,7 @@ export default function UploadPage() {
     try {
       const form = new FormData();
       form.append("file", file);
-      const API = import.meta.env.VITE_API_URL || "http://localhost:8000";
+      const API = API_URL;
       const res = await fetch(`${API}/predict`, { method: "POST", body: form });
       if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.detail || "API алдаа"); }
       const data = await res.json();
