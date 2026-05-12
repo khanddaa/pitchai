@@ -290,24 +290,26 @@ def llm_extract(text: str) -> dict | None:
         content = resp.json()["choices"][0]["message"]["content"].strip()
         content = re.sub(r'```(?:json)?\s*', '', content).replace('```', '')
         m = re.search(r'\{[\s\S]*?\}', content, re.DOTALL)
-        if not m: return None
+        if not m:
+            return None
 
-        raw_json = re.sub(r',\s*([}\]])', r'\1', m.group())
-        data = json.loads(raw_json)
+        data = json.loads(re.sub(r',\s*([}\]])', r'\1', m.group()))
 
         main_cat = data.get("main_category", "Technology")
-        if main_cat not in VALID_CATEGORIES: main_cat = "Technology"
+        if main_cat not in VALID_CATEGORIES:
+            main_cat = "Technology"
 
         goal = float(data.get("goal_usd", 10000))
-        if not (100 <= goal <= 10_000_000): goal = 10000.0
+        if not (100 <= goal <= 10_000_000):
+            goal = 10000.0
 
         dur = int(data.get("duration_days", 30))
-        if not (1 <= dur <= 92): dur = 30
+        if not (1 <= dur <= 92):
+            dur = 30
 
         currency = str(data.get("currency", "USD"))
         if currency == "MNT":
-            goal = round(goal / 3450, 2)
-            currency = "USD"
+            goal, currency = round(goal / 3450, 2), "USD"
 
         return {
             "campaign_name": str(data.get("campaign_name", "Untitled"))[:120],
@@ -320,7 +322,7 @@ def llm_extract(text: str) -> dict | None:
             "via_llm":       True,
         }
     except Exception as e:
-        print(f"[LLM] Error: {e}")
+        print(f"[LLM] {e}")
         return None
 
 
@@ -403,20 +405,25 @@ def _regex_category(text: str) -> tuple[str, str]:
         return best, sub.title()
     return "Technology", "Apps"
 
+COUNTRY_MAP = {
+    "монгол улс": "MN", "монгол": "MN", "улаанбаатар": "MN", "mongolia": "MN",
+    "united states": "US", "usa": "US", "united kingdom": "GB", "canada": "CA",
+    "australia": "AU", "germany": "DE", "france": "FR", "japan": "JP",
+}
+
 def regex_extract(text: str) -> dict:
     main_cat, cat = _regex_category(text)
     lines = [l.strip() for l in text.split('\n') if len(l.strip()) > 3]
-    name  = lines[0][:120] if lines else "Untitled Campaign"
-    countries = {
-        "монгол улс":"MN","монгол":"MN","улаанбаатар":"MN","mongolia":"MN",
-        "united states":"US","usa":"US","united kingdom":"GB","canada":"CA",
-        "australia":"AU","germany":"DE","france":"FR","japan":"JP",
-    }
-    country = next((code for phrase, code in countries.items() if phrase in text.lower()), "MN")
+    tl = text.lower()
     return {
-        "campaign_name": name, "goal_usd": _regex_goal(text),
-        "duration_days": _regex_duration(text), "main_category": main_cat,
-        "category": cat, "country": country, "currency": "USD", "via_llm": False,
+        "campaign_name": lines[0][:120] if lines else "Untitled Campaign",
+        "goal_usd":      _regex_goal(text),
+        "duration_days": _regex_duration(text),
+        "main_category": main_cat,
+        "category":      cat,
+        "country":       next((code for phrase, code in COUNTRY_MAP.items() if phrase in tl), "MN"),
+        "currency":      "USD",
+        "via_llm":       False,
     }
 
 
@@ -480,20 +487,15 @@ async def predict(request: Request, file: UploadFile = File(...), db: Session = 
 
     # Extraction: LLM → regex fallback
     regex_raw = regex_extract(text)
-    llm_raw   = llm_extract(text)
+    extracted = llm_extract(text) or regex_raw
+    via_llm   = extracted is not regex_raw
 
-    if llm_raw:
-        extracted  = llm_raw
-        goal_found = dur_found = via_llm = True
-    else:
-        extracted  = regex_raw
-        via_llm    = False
-        goal_found = regex_raw["goal_usd"] is not None
-        dur_found  = regex_raw["duration_days"] is not None
+    goal_found = via_llm or regex_raw["goal_usd"] is not None
+    dur_found  = via_llm or regex_raw["duration_days"] is not None
 
     name     = extracted["campaign_name"]
-    goal     = float(extracted["goal_usd"]      or 10000.0)
-    duration = int(  extracted["duration_days"] or 30)
+    goal     = float(extracted["goal_usd"] or 10000.0)
+    duration = int(extracted["duration_days"] or 30)
     main_cat = extracted["main_category"]
     cat      = extracted["category"]
     country  = extracted["country"]
