@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   ArrowRight, Loader2, FileText, X, CheckCircle,
@@ -6,31 +6,13 @@ import {
   Clock, Globe, Users, ChevronRight,
 } from "lucide-react";
 import { toast } from "sonner";
+import { DARK, PURPLE, FONT, CATEGORIES } from "@/constants";
 
-const DARK   = "#1B1240";
-const PURPLE = "#5C2D91";
-const FONT   = "'Plus Jakarta Sans', sans-serif";
-const fmtMB  = (b: number) => (b / 1024 / 1024).toFixed(1);
+const fmtMB = (b: number) => (b / 1024 / 1024).toFixed(1);
 
 const Sk = ({ w, h = 8, opacity = 0.12 }: { w: string; h?: number; opacity?: number }) => (
   <div className="shimmer" style={{ height: `${h}px`, borderRadius: "4px", width: w, background: `rgba(255,255,255,${opacity})` }} />
 );
-
-/* ── Category success rates ─────────────────────────────── */
-const CATEGORIES = [
-  { name: "Dance",        rate: 62, color: "#16a34a" },
-  { name: "Theater",      rate: 64, color: "#16a34a" },
-  { name: "Comics",       rate: 54, color: "#16a34a" },
-  { name: "Music",        rate: 48, color: "#2563eb" },
-  { name: "Art",          rate: 41, color: "#2563eb" },
-  { name: "Photography",  rate: 39, color: "#2563eb" },
-  { name: "Film & Video", rate: 37, color: "#d97706" },
-  { name: "Games",        rate: 35, color: "#d97706" },
-  { name: "Design",       rate: 35, color: "#d97706" },
-  { name: "Publishing",   rate: 32, color: "#dc2626" },
-  { name: "Food",         rate: 25, color: "#dc2626" },
-  { name: "Technology",   rate: 20, color: "#dc2626" },
-];
 
 export default function UploadPage() {
   const navigate  = useNavigate();
@@ -38,7 +20,14 @@ export default function UploadPage() {
   const [loading, setLoading] = useState(false);
   const [drag,    setDrag]    = useState(false);
   const [done,    setDone]    = useState(false);
+  const [elapsed, setElapsed] = useState(0);
   const inputRef  = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!loading) { setElapsed(0); return; }
+    const id = setInterval(() => setElapsed(s => s + 1), 1000);
+    return () => clearInterval(id);
+  }, [loading]);
 
   const setValidFile = (f: File | null | undefined) => {
     if (!f) return;
@@ -67,8 +56,10 @@ export default function UploadPage() {
       const res = await fetch(`${API}/predict`, { method: "POST", body: form });
       if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.detail || "API алдаа"); }
       const data = await res.json();
-      localStorage.setItem("pitchai_result", JSON.stringify(data));
+      // sessionStorage — tab хаахад автоматаар устана
+      sessionStorage.setItem("pitchai_result", JSON.stringify(data));
       try {
+        // history localStorage-д үлдэнэ (AdminPage-д харагдана)
         const histItem = { id: Date.now(), name: data.extracted?.campaign_name || file.name, result: data.prediction, probability: data.probability, date: new Date().toLocaleDateString("mn-MN"), via_llm: data.via_llm };
         const prev = JSON.parse(localStorage.getItem("pitchai_history") || "[]");
         localStorage.setItem("pitchai_history", JSON.stringify([histItem, ...prev].slice(0, 20)));
@@ -84,37 +75,51 @@ export default function UploadPage() {
     <div style={{ fontFamily: FONT }}
       onDragEnter={onDrag} onDragOver={onDrag} onDragLeave={onDrag} onDrop={onDrop}>
 
-      {/* ════════════════════════════════════════════════════
-          SECTION 1 — HERO (full viewport height)
-      ════════════════════════════════════════════════════ */}
-      <div style={{ display: "flex", minHeight: "calc(100vh - 144px)" }}>
+      <style>{`
+        .upload-hero { display: flex; min-height: calc(100vh - 144px); }
+        .upload-left { width: 55%; padding: 72px 56px 72px 80px; display: flex; flex-direction: column; justify-content: center; }
+        .upload-right { width: 45%; background: linear-gradient(155deg,#1e0757 0%,#3b0f8a 30%,#5b21b6 65%,#7c3aed 100%); position: relative; overflow: hidden; }
+        .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0; }
+        .features-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; }
+        .steps-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0; position: relative; }
+        .cat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 80px; align-items: center; }
+        @media (max-width: 768px) {
+          .upload-hero { flex-direction: column; min-height: unset; }
+          .upload-left { width: 100%; padding: 40px 20px 32px; }
+          .upload-right { width: 100%; min-height: 480px; }
+          .stats-grid { grid-template-columns: repeat(2, 1fr); gap: 16px; padding: 32px 20px !important; }
+          .features-grid { grid-template-columns: 1fr; }
+          .steps-grid { grid-template-columns: 1fr; gap: 32px; }
+          .cat-grid { grid-template-columns: 1fr; gap: 32px; }
+          .hide-mobile { display: none !important; }
+          .pad-mobile { padding: 48px 20px !important; }
+        }
+      `}</style>
+
+      {/* SECTION 1 — HERO */}
+      <div className="upload-hero">
 
         {/* LEFT */}
-        <div style={{ width: "55%", padding: "72px 56px 72px 80px", display: "flex", flexDirection: "column", justifyContent: "center" }}
-          className="animate-fade-in-up">
+        <div className="upload-left animate-fade-in-up">
 
           <p style={{ color: "#6B7280", fontSize: "14px", fontWeight: 500, marginBottom: "20px" }}>
             PitchAI IAM | Iris
           </p>
 
           <h1 style={{ fontSize: "clamp(38px, 4.2vw, 56px)", fontWeight: 800, lineHeight: 1.08, color: DARK, marginBottom: "28px", letterSpacing: "-1.8px", maxWidth: "520px" }}>
-            Краудфандинг AI<br />таны итгэж болох
+            Төслийнхөө сул талыг олж,<br />амжилтын магадлалаа өсгө
           </h1>
 
           <p style={{ fontSize: "18px", color: "#374151", lineHeight: 1.7, marginBottom: "16px", maxWidth: "460px", fontWeight: 400 }}>
-            PitchAI Iris бол краудфандинг pitch deck-ийн PDF-г шинжлэж,
-            амжилтын магадлалыг секундын дотор тооцоолдог AI систем юм.
-          </p>
-          <p style={{ fontSize: "18px", color: "#374151", lineHeight: 1.7, maxWidth: "460px", fontWeight: 400 }}>
-            Iris нь ML платформын нэг хэсэг бөгөөд Монгол хэлний LLM
-            дэмжлэгтэйгээр ажилладаг.
+            PDF оруулаад секундын дотор амжилтын магадлал,
+            дэлгэрэнгүй шинжилгээ, хэрэгжүүлэх зөвлөмж авна.
           </p>
 
           <div style={{ marginTop: "40px", display: "flex", flexDirection: "column", gap: "13px" }}>
             {[
-              "Random Forest · Kickstarter n=331,675",
-              "Монгол LLM шинжилгээ (Groq Llama 3.1)",
-              "₮ → $ автомат хөрвүүлэлт · 25 feature",
+              "Монгол болон англи PDF дэмжинэ",
+              "Секундын дотор үр дүн",
+              "AI зөвлөмж шууд гарна",
             ].map(text => (
               <div key={text} style={{ display: "flex", alignItems: "center", gap: "10px" }}>
                 <div style={{ width: "6px", height: "6px", borderRadius: "50%", background: PURPLE, flexShrink: 0 }}/>
@@ -125,7 +130,7 @@ export default function UploadPage() {
         </div>
 
         {/* RIGHT — purple gradient */}
-        <div style={{ width: "45%", background: "linear-gradient(155deg,#1e0757 0%,#3b0f8a 30%,#5b21b6 65%,#7c3aed 100%)", position: "relative", overflow: "hidden" }}>
+        <div className="upload-right">
           <div style={{ position:"absolute", top:"-80px", right:"-80px", width:"320px", height:"320px", borderRadius:"50%", background:"rgba(124,58,237,0.20)", filter:"blur(80px)", pointerEvents:"none" }}/>
           <div style={{ position:"absolute", bottom:"160px", left:"-60px", width:"240px", height:"240px", borderRadius:"50%", background:"rgba(91,33,182,0.22)", filter:"blur(60px)", pointerEvents:"none" }}/>
 
@@ -193,9 +198,9 @@ export default function UploadPage() {
           <div className="animate-slide-up" style={{ position:"absolute", bottom:"22px", left:"20px", right:"20px", background:"#fff", borderRadius:"14px", padding:"18px 20px 20px", boxShadow:"0 32px 80px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.08)", zIndex:10 }}>
             <div style={{ display:"flex", alignItems:"center", gap:"5px", marginBottom:"8px" }}>
               <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1l1.5 4H13l-3.5 2.5L11 12 7 9.5 3 12l1.5-4.5L1 5h4.5z" fill={PURPLE}/></svg>
-              <span style={{ color:"#374151", fontSize:"12.5px", fontWeight:600, fontFamily: FONT }}>AI-Assisted</span>
+              <span style={{ color:"#374151", fontSize:"12.5px", fontWeight:600, fontFamily: FONT }}>ML-д суурилсан шинжилгээ</span>
             </div>
-            <h3 style={{ fontSize:"18px", fontWeight:700, color:DARK, marginBottom:"14px", lineHeight:1.2, fontFamily: FONT, letterSpacing:"-0.3px" }}>Campaign overview</h3>
+            <h3 style={{ fontSize:"18px", fontWeight:700, color:DARK, marginBottom:"14px", lineHeight:1.2, fontFamily: FONT, letterSpacing:"-0.3px" }}>Төслийн шинжилгээ</h3>
             <div style={{ display:"flex", gap:"8px", alignItems:"center" }}>
               <div onClick={() => inputRef.current?.click()}
                 style={{ flex:1, border:`1.5px solid ${drag ? PURPLE : "#E5E7EB"}`, borderRadius:"8px", padding:"10px 14px", fontSize:"13.5px", color: file ? DARK : "#9CA3AF", display:"flex", alignItems:"center", gap:"8px", cursor:"pointer", overflow:"hidden", transition:"border-color 0.15s", fontFamily: FONT }}
@@ -214,7 +219,14 @@ export default function UploadPage() {
               </button>
             </div>
             <div style={{ marginTop:"10px", minHeight:"16px" }}>
-              {loading && <div style={{ display:"flex", alignItems:"center", gap:"6px" }}><div className="animate-pulse-dot" style={{ width:"6px", height:"6px", borderRadius:"50%", background:PURPLE }}/><span style={{ fontSize:"11.5px", color:"#9CA3AF", fontFamily: FONT }}>Монгол PDF шинжилж байна...</span></div>}
+              {loading && (
+                <div style={{ display:"flex", alignItems:"center", gap:"6px" }}>
+                  <Loader2 size={11} color={PURPLE} className="animate-spin"/>
+                  <span style={{ fontSize:"11.5px", color:"#9CA3AF", fontFamily: FONT }}>
+                    Таны PDF боловсруулж байна... · {elapsed} секунд өнгөрлөө
+                  </span>
+                </div>
+              )}
               {done && <span style={{ fontSize:"11.5px", color:"#16a34a", fontFamily: FONT }}>✓ Шинжилгээ дууслаа — үр дүн ачаалж байна</span>}
               {!loading && !done && file && <span style={{ fontSize:"11.5px", color:"#9CA3AF", fontFamily: FONT }}>→ товчийг дарж шинжилгээ эхлүүлнэ</span>}
             </div>
@@ -226,12 +238,11 @@ export default function UploadPage() {
           SECTION 2 — STATS BAR
       ════════════════════════════════════════════════════ */}
       <div style={{ background: "#F8F7FF", borderTop: "1px solid #EDE9FE", borderBottom: "1px solid #EDE9FE", padding: "36px 80px" }}>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "0" }}>
+        <div className="stats-grid" style={{ padding: "0 80px" }}>
           {[
-            { value: "331,675", label: "Kickstarter кампанит ажил", icon: Globe },
-            { value: "73.8%",   label: "AUC нарийвчлал",            icon: BarChart3 },
-            { value: "~3 сек",  label: "Шинжилгээний хурд",         icon: Clock },
-            { value: "25",      label: "ML feature тоо",             icon: Zap },
+            { value: "331,675", label: "Судалсан төслүүд",             icon: Globe },
+            { value: "73.8%",   label: "Таамаглалын нарийвчлал",     icon: BarChart3 },
+            { value: "~3 сек",  label: "Дундаж шинжилгээний хугацаа", icon: Clock },
           ].map(({ value, label, icon: Icon }, i, arr) => (
             <div key={label} style={{ display: "flex", alignItems: "center", gap: "16px", padding: "0 40px", borderRight: i < arr.length - 1 ? "1px solid #DDD6FE" : "none" }}>
               <div style={{ width: "44px", height: "44px", borderRadius: "12px", background: "rgba(92,45,145,0.1)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
@@ -261,37 +272,37 @@ export default function UploadPage() {
           </p>
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "24px" }}>
+        <div className="features-grid">
           {[
             {
-              icon: Zap, title: "Монгол PDF шинжилгээ",
-              desc: "Groq Llama 3.1 загвар ашиглан Монгол хэл дээрх pitch deck-ийн мэдээллийг автоматаар гаргаж авна. Кирилл, латин бичгийн дэмжлэгтэй.",
-              tag: "LLM дэмжлэгтэй",
+              icon: Zap, title: "Секундын дотор үр дүн",
+              desc: "PDF оруулмагц таамаглал шууд гарна. Хүлээх шаардлагагүй.",
+              tag: "ХУРДАН",
             },
             {
-              icon: BarChart3, title: "Random Forest ML загвар",
-              desc: "Kickstarter-ийн 2009–2018 оны 331,675 кампанит ажлын датасет дээр сургасан. 25 feature ашигладаг бөгөөд AUC 73.8% нарийвчлалтай.",
-              tag: "331K датасет",
+              icon: BarChart3, title: "Монгол хэл дэмжинэ",
+              desc: "Монгол хэлний pitch deck-г автоматаар ойлгож боловсруулна.",
+              tag: "МОНГОЛ",
             },
             {
-              icon: ShieldCheck, title: "Нарийвчилсан мэдээлэл",
-              desc: "Шинжилгээний дараа категориоор амжилтын хувь, зорилтот дүн, хугацааны оновчлол зэрэг дэлгэрэнгүй зөвлөмж авна.",
-              tag: "AI зөвлөмж",
+              icon: ShieldCheck, title: "AI зөвлөмж",
+              desc: "Таны төслийг яаж сайжруулахыг тодорхой зааж өгнө.",
+              tag: "УХААЛАГ",
             },
             {
-              icon: Globe, title: "₮ → $ Автомат хөрвүүлэлт",
-              desc: "Монгол төгрөгөөр бичигдсэн зорилтот дүнг автоматаар АНУ долларт хөрвүүлнэ. 1$ = 3,450₮ ханшаар тооцоолно.",
-              tag: "Монгол контекст",
+              icon: Globe, title: "Ангиллын дүн шинжилгээ",
+              desc: "Таны ангиллын краудфандингийн амжилтын түүхэн статистикийг харуулна.",
+              tag: "ДЭЛГЭРЭНГҮЙ",
             },
             {
-              icon: TrendingUp, title: "Категориоор таамаглал",
-              desc: "Dance, Theater, Comics зэрэг амжилтын хувь өндөр категориас Technology, Fashion зэрэг эрсдэлтэй категори хүртэл дэлгэрэнгүй харьцуулна.",
-              tag: "15 категори",
+              icon: TrendingUp, title: "Олон загварын нэгдэл",
+              desc: "XGBoost, LightGBM, Random Forest гурван загварын нэгдсэн үр дүн.",
+              tag: "НАЙДВАРТАЙ",
             },
             {
-              icon: Users, title: "Тодорхой зөвлөмж",
-              desc: "Зорилтот дүн хэт өндөр бол бууруул, хугацаа хэт урт бол богиносгол гэх мэт тодорхой, хэрэгжих боломжтой зөвлөмжийг авна.",
-              tag: "Хувийн зөвлөгөө",
+              icon: Users, title: "Нөлөөлсөн хүчин зүйлс",
+              desc: "Таамаглалд юу хамгийн их нөлөөлснийг графикаар харуулна.",
+              tag: "ТОДОРХОЙ",
             },
           ].map(({ icon: Icon, title, desc, tag }) => (
             <div key={title}
@@ -310,31 +321,25 @@ export default function UploadPage() {
       </div>
 
       {/* ════════════════════════════════════════════════════
-          SECTION 4 — HOW IT WORKS
+          SECTION 4 — STATS
       ════════════════════════════════════════════════════ */}
-      <div style={{ background: "#F8F7FF", padding: "88px 80px", borderTop: "1px solid #EDE9FE" }}>
-        <div style={{ textAlign: "center", marginBottom: "60px" }}>
-          <p style={{ color: PURPLE, fontSize: "13px", fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: "12px" }}>Хэрхэн ажилладаг вэ</p>
-          <h2 style={{ fontSize: "clamp(28px, 3vw, 40px)", fontWeight: 800, color: DARK, letterSpacing: "-1px", lineHeight: 1.1 }}>
-            Гурван алхмаар шинжилгээ хийнэ
-          </h2>
-        </div>
-
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "0", position: "relative" }}>
-          {/* Connector lines */}
-          <div style={{ position: "absolute", top: "36px", left: "calc(16.67% + 20px)", right: "calc(16.67% + 20px)", height: "2px", background: "linear-gradient(90deg, #DDD6FE, #DDD6FE)", zIndex: 0 }}/>
-
+      <div style={{ background: "#F8F7FF", padding: "80px 80px", borderTop: "1px solid #EDE9FE" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "0" }}>
           {[
-            { step: "01", title: "PDF оруулна", desc: "Таны краудфандинг pitch deck PDF файлыг drag & drop эсвэл товшиж оруулна уу. 50MB хүртэл дэмждэг.", color: "#EDE9FE" },
-            { step: "02", title: "AI шинжилнэ",  desc: "Groq Llama 3.1 LLM PDF-ийн текстийг уншиж, зорилтот дүн, хугацаа, ангилал зэрэг мэдээллийг гаргаж авна.", color: "#DDD6FE" },
-            { step: "03", title: "Үр дүн авна",  desc: "Random Forest загвар амжилтын магадлал, категориоор харьцуулалт, хувийн зөвлөмжийг хэдхэн секундэд гаргана.", color: "#C4B5FD" },
-          ].map(({ step, title, desc, color }) => (
-            <div key={step} style={{ display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center", padding: "0 40px", position: "relative", zIndex: 1 }}>
-              <div style={{ width: "72px", height: "72px", borderRadius: "50%", background: color, border: "4px solid #fff", boxShadow: "0 4px 16px rgba(92,45,145,0.15)", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: "24px" }}>
-                <span style={{ fontSize: "20px", fontWeight: 800, color: PURPLE }}>{step}</span>
+            { value: "331,675", label: "Судалсан кампанит ажил", sub: "Kickstarter 2009–2018", accent: "#5C2D91" },
+            { value: "76.6%",   label: "Таамаглалын нарийвчлал", sub: "AUC оноо",              accent: "#7C3AED" },
+            { value: "3",       label: "ML загварын нэгдэл",     sub: "XGBoost · LightGBM · Random Forest", accent: "#6D28D9" },
+          ].map(({ value, label, sub, accent }, i, arr) => (
+            <div key={label} style={{
+              display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center",
+              padding: "48px 40px",
+              borderRight: i < arr.length - 1 ? "1px solid #DDD6FE" : "none",
+            }}>
+              <div style={{ fontSize: "clamp(48px,5vw,68px)", fontWeight: 900, color: accent, letterSpacing: "-2px", lineHeight: 1, marginBottom: "14px", fontFamily: FONT }}>
+                {value}
               </div>
-              <h3 style={{ fontSize: "18px", fontWeight: 700, color: DARK, marginBottom: "10px", letterSpacing: "-0.3px" }}>{title}</h3>
-              <p style={{ fontSize: "14.5px", color: "#6B7280", lineHeight: 1.7, fontWeight: 400 }}>{desc}</p>
+              <p style={{ fontSize: "17px", fontWeight: 700, color: DARK, margin: "0 0 6px", letterSpacing: "-0.3px" }}>{label}</p>
+              <p style={{ fontSize: "13px", color: "#9CA3AF", margin: 0, fontWeight: 400 }}>{sub}</p>
             </div>
           ))}
         </div>
@@ -344,10 +349,10 @@ export default function UploadPage() {
           SECTION 5 — CATEGORY SUCCESS RATES
       ════════════════════════════════════════════════════ */}
       <div style={{ background: "#fff", padding: "88px 80px", borderTop: "1px solid #E5E7EB" }}>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "80px", alignItems: "center" }}>
+          <div className="cat-grid">
           {/* Left text */}
           <div>
-            <p style={{ color: PURPLE, fontSize: "13px", fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: "12px" }}>Kickstarter өгөгдөл</p>
+            <p style={{ color: PURPLE, fontSize: "13px", fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: "12px" }}>Статистик</p>
             <h2 style={{ fontSize: "clamp(26px, 2.8vw, 38px)", fontWeight: 800, color: DARK, letterSpacing: "-1px", lineHeight: 1.15, marginBottom: "20px" }}>
               Категориоор<br/>амжилтын хувь
             </h2>
@@ -424,9 +429,18 @@ export default function UploadPage() {
           <span style={{ color: "#fff", fontWeight: 700, fontSize: "16px", letterSpacing: "-0.4px" }}>pitchai</span>
           <span style={{ color: "rgba(255,255,255,0.3)", fontSize: "13px", marginLeft: "8px" }}>© 2026</span>
         </div>
-        <p style={{ fontSize: "13px", color: "rgba(255,255,255,0.35)", margin: 0 }}>
-          Kickstarter dataset · n = 331,675 · Random Forest + XGBoost + LightGBM
-        </p>
+        <div style={{ display: "flex", gap: "20px" }}>
+          {["Нууцлалын бодлого", "Үйлчилгээний нөхцөл", "Холбоо барих"].map((label, i, arr) => (
+            <span key={label} style={{ display: "flex", alignItems: "center", gap: "20px" }}>
+              <a href="#" style={{ fontSize: "13px", color: "rgba(255,255,255,0.35)", textDecoration: "none" }}
+                onMouseEnter={e => (e.currentTarget.style.color = "rgba(255,255,255,0.7)")}
+                onMouseLeave={e => (e.currentTarget.style.color = "rgba(255,255,255,0.35)")}>
+                {label}
+              </a>
+              {i < arr.length - 1 && <span style={{ color: "rgba(255,255,255,0.15)", fontSize: "13px" }}>·</span>}
+            </span>
+          ))}
+        </div>
       </div>
 
     </div>

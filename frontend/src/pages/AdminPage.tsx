@@ -20,6 +20,31 @@ interface HistoryItem {
   via_llm: boolean;
 }
 
+interface ApiHistoryItem {
+  id: number;
+  campaign_name: string;
+  goal_usd: number;
+  duration_days: number;
+  main_category: string;
+  probability: number;
+  prediction: "successful" | "failed";
+  via_llm: boolean;
+  created_at: string;
+}
+
+const API = (import.meta as any).env?.VITE_API_URL || "http://localhost:8000";
+
+function apiToHistoryItem(r: ApiHistoryItem): HistoryItem {
+  return {
+    id:          r.id,
+    name:        r.campaign_name,
+    result:      r.prediction,
+    probability: r.probability,
+    date:        new Date(r.created_at).toLocaleDateString("mn-MN"),
+    via_llm:     r.via_llm,
+  };
+}
+
 /* ── helpers ───────────────────────────────────────────────── */
 const Pill = ({ label, color, bg, border }: { label:string; color:string; bg:string; border:string }) => (
   <span style={{ fontSize:"11px", fontWeight:600, padding:"2px 10px", borderRadius:"20px", color, background:bg, border:`1px solid ${border}`, whiteSpace:"nowrap" }}>
@@ -47,44 +72,33 @@ export default function AdminPage() {
   const [backendStatus, setBackendStatus] = useState<BackendStatus | null>(null);
   const [checking,      setChecking]      = useState(false);
   const [history,       setHistory]       = useState<HistoryItem[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const [maxSize,       setMaxSize]       = useState("50");
   const [ocrLang,       setOcrLang]       = useState("mon+eng");
 
-  /* Load history from localStorage */
-  useEffect(() => {
+  const loadHistory = async () => {
+    setHistoryLoading(true);
+    try {
+      const res = await fetch(`${API}/history?limit=50`);
+      if (res.ok) {
+        const data: ApiHistoryItem[] = await res.json();
+        setHistory(data.map(apiToHistoryItem));
+        return;
+      }
+    } catch {}
+    /* Fallback: localStorage */
     const raw = localStorage.getItem("pitchai_history");
     if (raw) {
       try { setHistory(JSON.parse(raw)); } catch {}
     }
+    setHistoryLoading(false);
+  };
 
-    /* Save current result to history if exists */
-    const result = localStorage.getItem("pitchai_result");
-    if (result) {
-      try {
-        const r = JSON.parse(result);
-        const item: HistoryItem = {
-          id: Date.now(),
-          name: r.extracted?.campaign_name || "Untitled",
-          result: r.prediction,
-          probability: r.probability,
-          date: new Date().toLocaleDateString("mn-MN"),
-          via_llm: r.via_llm,
-        };
-        setHistory(prev => {
-          const exists = prev.some(p => p.name === item.name && p.probability === item.probability);
-          if (exists) return prev;
-          const updated = [item, ...prev].slice(0, 20);
-          localStorage.setItem("pitchai_history", JSON.stringify(updated));
-          return updated;
-        });
-      } catch {}
-    }
-  }, []);
+  useEffect(() => { loadHistory(); }, []);
 
   const checkBackend = async () => {
     setChecking(true);
     try {
-      const API = import.meta.env.VITE_API_URL || "http://localhost:8000";
       const res = await fetch(`${API}/`);
       if (res.ok) {
         const data = await res.json();
@@ -230,16 +244,31 @@ export default function AdminPage() {
               <Clock size={14} color={PURPLE}/>
             </div>
             <span style={{ fontSize:"13px", fontWeight:700, color:DARK }}>Шинжилгээний түүх</span>
+            <span style={{ fontSize:"11px", color:"#9CA3AF", background:"#F3F4F6", borderRadius:"10px", padding:"1px 8px" }}>
+              PostgreSQL
+            </span>
           </div>
-          {history.length > 0 && (
-            <button onClick={clearHistory}
-              style={{ fontSize:"12px", color:"#dc2626", background:"none", border:"1px solid #fecaca", borderRadius:"6px", padding:"4px 12px", cursor:"pointer" }}>
-              Бүгдийг арилгах
+          <div style={{ display:"flex", gap:"8px" }}>
+            <button onClick={loadHistory} disabled={historyLoading}
+              style={{ display:"flex", alignItems:"center", gap:"5px", fontSize:"12px", color:PURPLE, background:"none", border:`1px solid rgba(107,33,168,0.2)`, borderRadius:"6px", padding:"4px 10px", cursor:"pointer", opacity: historyLoading ? 0.6 : 1 }}>
+              <RefreshCw size={11} className={historyLoading ? "animate-spin" : ""}/>
+              Шинэчлэх
             </button>
-          )}
+            {history.length > 0 && (
+              <button onClick={clearHistory}
+                style={{ fontSize:"12px", color:"#dc2626", background:"none", border:"1px solid #fecaca", borderRadius:"6px", padding:"4px 12px", cursor:"pointer" }}>
+                Арилгах
+              </button>
+            )}
+          </div>
         </div>
 
-        {history.length === 0 ? (
+        {historyLoading ? (
+          <div style={{ textAlign:"center", padding:"32px 20px", color:"#9CA3AF", fontSize:"13px" }}>
+            <RefreshCw size={20} className="animate-spin" style={{ margin:"0 auto 8px", display:"block" }}/>
+            Түүх ачааллаж байна...
+          </div>
+        ) : history.length === 0 ? (
           <div style={{ textAlign:"center", padding:"40px 20px" }}>
             <div style={{ width:"48px", height:"48px", borderRadius:"12px", background:"#F9FAFB", border:"1px solid #E5E7EB", display:"flex", alignItems:"center", justifyContent:"center", margin:"0 auto 12px" }}>
               <FileText size={22} color="#9CA3AF"/>

@@ -7,3 +7,10 @@ scipy>=1.12.0
 scikit-learn>=1.4.0
 PyMuPDF>=1.24.0
 requests==2.31.0
+shap>=0.44,<0.46
+pytesseract==0.3.10
+Pillow==10.4.0
+slowapi==0.1.9
+sqlalchemy==2.0.36
+psycopg2-binary==2.9.9
+alembic==1.13.3

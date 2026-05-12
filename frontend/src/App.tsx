@@ -12,6 +12,8 @@ import LoginPage from "./pages/LoginPage";
 import UploadPage from "./pages/UploadPage";
 import ResultPage from "./pages/ResultPage";
 import AdminPage from "./pages/AdminPage";
+import AboutPage from "./pages/AboutPage";
+import PricingPage from "./pages/PricingPage";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -61,7 +63,17 @@ const App = () => (
                         <UploadPage />
                       </div>
                     } />
-                    <Route path="/result" element={<ResultPage />} />
+                    <Route path="/result"  element={<ResultPage />} />
+                    <Route path="/about"  element={
+                      <div style={{ height: "calc(100vh - 144px)", overflowY: "auto" }}>
+                        <AboutPage />
+                      </div>
+                    } />
+                    <Route path="/pricing" element={
+                      <div style={{ height: "calc(100vh - 144px)", overflowY: "auto" }}>
+                        <PricingPage />
+                      </div>
+                    } />
 
                     {/* Scrollable page */}
                     <Route path="/admin"  element={

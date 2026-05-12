@@ -1,3 +1,10 @@
+databases:
+  # ── PostgreSQL ─────────────────────────────────────────────
+  - name: pitchai-db
+    databaseName: pitchai
+    user: pitchai
+    plan: free
+
 services:
   # ── Backend (FastAPI) ──────────────────────────────────────
   - type: web
@@ -9,6 +16,10 @@ services:
     envVars:
       - key: GROQ_API_KEY
         sync: false   # Render dashboard-аас оруулна
+      - key: DATABASE_URL
+        fromDatabase:
+          name: pitchai-db
+          property: connectionString
     plan: free
 
   # ── Frontend (React Static) ────────────────────────────────

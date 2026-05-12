@@ -1,21 +1,42 @@
-import os, json, re, pickle
+import os, json, re, pickle, io
 from dotenv import load_dotenv
 load_dotenv()
 
+import shap
 import numpy as np
 import fitz
+import pytesseract
+from PIL import Image
 import requests as http_req
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, UploadFile, File, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 from scipy.sparse import hstack, csr_matrix
 from datetime import datetime
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from sqlalchemy.orm import Session
+
+from database import engine, get_db, Base
+from models_db import Prediction as PredictionRow
+
+Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="PitchAI API v2")
+
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+_raw_origins = os.environ.get("ALLOWED_ORIGINS", "http://localhost:5173")
+ALLOWED_ORIGINS = [o.strip() for o in _raw_origins.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=ALLOWED_ORIGINS,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 # ── MODEL paths — models/ дэд хавтсаас унших ─────────────────
@@ -55,6 +76,54 @@ else:
     }
     MODEL_CONFIG = {}
     print("✅ Model v1 loaded")
+
+# ── SHAP explainer (lazy init) ────────────────────────────────
+_shap_explainer = None
+
+def _get_shap_explainer():
+    global _shap_explainer
+    if _shap_explainer is not None:
+        return _shap_explainer
+    try:
+        if MODEL_VERSION == "v2" and hasattr(model, "calibrated_classifiers_"):
+            tree_model = model.calibrated_classifiers_[0].estimator.estimators_[0]
+        else:
+            tree_model = model
+        _shap_explainer = shap.TreeExplainer(tree_model)
+        print("✅ SHAP explainer бэлэн")
+    except Exception as e:
+        print(f"⚠️  SHAP init алдаа: {e}")
+    return _shap_explainer
+
+def compute_shap(x_combined, feat_dict: dict) -> list:
+    explainer = _get_shap_explainer()
+    if explainer is None:
+        return []
+    try:
+        try:
+            raw = explainer.shap_values(x_combined)
+        except Exception:
+            raw = explainer.shap_values(x_combined.toarray())
+        # binary class: list[neg, pos] эсвэл нэг array
+        if isinstance(raw, list):
+            sv = np.asarray(raw[1]).ravel()
+        else:
+            sv = np.asarray(raw).ravel()
+        out = []
+        for i, fname in enumerate(FEATURES_NUM):
+            if i >= len(sv):
+                break
+            out.append({
+                "feature":       fname,
+                "shap_value":    round(float(sv[i]), 4),
+                "direction":     "positive" if sv[i] > 0 else "negative",
+                "feature_value": round(float(feat_dict.get(fname, 0)), 4),
+            })
+        out.sort(key=lambda d: abs(d["shap_value"]), reverse=True)
+        return out[:8]
+    except Exception as e:
+        print(f"[SHAP] {e}")
+        return []
 
 # ── Groq LLM ─────────────────────────────────────────────────
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
@@ -131,6 +200,45 @@ def build_features(name: str, goal: float, duration: int,
         x_combined = hstack([x_combined, x_char])
 
     return x_combined, feat_dict
+
+
+# ─────────────────────────────────────────────────────────────
+# MONGOLIAN DETECTION & TRANSLATION
+# ─────────────────────────────────────────────────────────────
+def is_mongolian(text: str) -> bool:
+    if not text:
+        return False
+    mon_chars = sum(1 for c in text if "Ѐ" <= c <= "ӿ")
+    return (mon_chars / len(text)) > 0.30
+
+def translate_to_english(name: str, api_key: str) -> str:
+    if not api_key:
+        return name
+    try:
+        resp = http_req.post(
+            GROQ_URL,
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={
+                "model": GROQ_MODEL,
+                "messages": [{
+                    "role": "user",
+                    "content": (
+                        f"Translate this Mongolian crowdfunding campaign name to English. "
+                        f"Return only the translated name, nothing else.\n\nName: {name}"
+                    ),
+                }],
+                "temperature": 0.1,
+                "max_tokens": 60,
+            },
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            translated = resp.json()["choices"][0]["message"]["content"].strip()
+            if translated:
+                return translated
+    except Exception as e:
+        print(f"[translate] {e}")
+    return name
 
 
 # ─────────────────────────────────────────────────────────────
@@ -347,7 +455,8 @@ def model_info():
     }
 
 @app.post("/predict")
-async def predict(file: UploadFile = File(...)):
+@limiter.limit("5/minute")
+async def predict(request: Request, file: UploadFile = File(...), db: Session = Depends(get_db)):
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(400, "Зөвхөн PDF файл оруулна уу")
 
@@ -355,6 +464,16 @@ async def predict(file: UploadFile = File(...)):
     doc  = fitz.open(stream=raw, filetype="pdf")
     pages = len(doc)
     text = "\n".join(page.get_text() for page in doc)
+
+    if len(text.strip()) < 30:
+        # Scanned PDF — OCR fallback at 300 DPI
+        mat = fitz.Matrix(300 / 72, 300 / 72)
+        ocr_parts = []
+        for page in doc:
+            pix = page.get_pixmap(matrix=mat)
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            ocr_parts.append(pytesseract.image_to_string(img, lang="mon+eng"))
+        text = "\n".join(ocr_parts)
 
     if len(text.strip()) < 30:
         raise HTTPException(422, "PDF-ээс текст гаргаж чадсангүй (зургаар хийгдсэн PDF байж болзошгүй)")
@@ -384,11 +503,16 @@ async def predict(file: UploadFile = File(...)):
         kw in text.lower() for kw in ["монгол","mongolia","улаанбаатар","ulaanbaatar"]
     )
 
+    # Translate Mongolian campaign name so TF-IDF vocab matches
+    if is_mongolian(name):
+        name = translate_to_english(name, GROQ_API_KEY)
+
     # Predict
     x, feat_dict = build_features(name, goal, duration, main_cat, cat, country, currency)
-    prob = float(model.predict_proba(x)[0][1])
-    pred = "successful" if prob >= 0.5 else "failed"
-    conf = "өндөр" if abs(prob - 0.5) > 0.2 else "дунд"
+    prob      = float(model.predict_proba(x)[0][1])
+    pred      = "successful" if prob >= 0.5 else "failed"
+    conf      = "өндөр" if abs(prob - 0.5) > 0.2 else "дунд"
+    shap_vals = compute_shap(x, feat_dict)
 
     # Feature importance — show numerical features
     if MODEL_VERSION == "v2" and hasattr(model, "calibrated_classifiers_"):
@@ -423,6 +547,25 @@ async def predict(file: UploadFile = File(...)):
         if daily > 3000:
             recs.append(f"Өдөрт ${daily:,.0f} шаардлагатай — маш өндөр. Зорилтот дүн эсвэл хугацааг тохируулна уу")
 
+    try:
+        db.add(PredictionRow(
+            campaign_name=name,
+            goal_usd=goal,
+            duration_days=duration,
+            main_category=main_cat,
+            category=cat,
+            country=country,
+            probability=round(prob * 100, 1),
+            prediction=pred,
+            model_version=MODEL_VERSION,
+            via_llm=via_llm,
+            filename=file.filename,
+        ))
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        print(f"[DB] Хадгалах алдаа: {e}")
+
     return {
         "probability":  round(prob * 100, 1),
         "prediction":   pred,
@@ -441,4 +584,82 @@ async def predict(file: UploadFile = File(...)):
             "country_found": country_found, "via_llm": via_llm,
         },
         "category_success_rate": cat_rate,
+        "shap_explanation": shap_vals,
+    }
+
+
+# ─────────────────────────────────────────────────────────────
+# HISTORY ENDPOINT
+# ─────────────────────────────────────────────────────────────
+@app.get("/history")
+def history(limit: int = 50, db: Session = Depends(get_db)):
+    rows = (
+        db.query(PredictionRow)
+        .order_by(PredictionRow.created_at.desc())
+        .limit(min(limit, 200))
+        .all()
+    )
+    return [
+        {
+            "id":            r.id,
+            "campaign_name": r.campaign_name,
+            "goal_usd":      r.goal_usd,
+            "duration_days": r.duration_days,
+            "main_category": r.main_category,
+            "category":      r.category,
+            "country":       r.country,
+            "probability":   r.probability,
+            "prediction":    r.prediction,
+            "model_version": r.model_version,
+            "via_llm":       r.via_llm,
+            "filename":      r.filename,
+            "created_at":    r.created_at.isoformat(),
+        }
+        for r in rows
+    ]
+
+
+# ─────────────────────────────────────────────────────────────
+# WHAT-IF ENDPOINT
+# ─────────────────────────────────────────────────────────────
+class WhatIfRequest(BaseModel):
+    campaign_name: str
+    goal_usd:      float = Field(gt=0)
+    duration_days: int   = Field(ge=1, le=92)
+    main_category: str
+    category:      str
+    country:       str  = "MN"
+    currency:      str  = "USD"
+
+@app.post("/whatif")
+async def whatif(req: WhatIfRequest):
+    if req.main_category not in VALID_CATEGORIES:
+        raise HTTPException(400, f"main_category must be one of {VALID_CATEGORIES}")
+
+    def _prob(goal: float, dur: int) -> float:
+        xw, _ = build_features(
+            req.campaign_name, goal, dur,
+            req.main_category, req.category, req.country, req.currency,
+        )
+        return round(float(model.predict_proba(xw)[0][1]) * 100, 1)
+
+    base_prob = _prob(req.goal_usd, req.duration_days)
+
+    # Goal sweep — 7 нүд: 25 % → 400 % of requested goal
+    goal_sweep = [
+        {"goal_usd": round(req.goal_usd * f, 2), "probability": _prob(req.goal_usd * f, req.duration_days)}
+        for f in [0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 4.0]
+    ]
+
+    # Duration sweep — тогтмол өдрүүд
+    dur_sweep = [
+        {"duration_days": d, "probability": _prob(req.goal_usd, d)}
+        for d in [7, 14, 21, 30, 45, 60, 90]
+    ]
+
+    return {
+        "probability":    base_prob,
+        "prediction":     "successful" if base_prob >= 50 else "failed",
+        "goal_sweep":     goal_sweep,
+        "duration_sweep": dur_sweep,
     }

@@ -12,6 +12,10 @@ frontend/.vite/
 # ML data (том файл)
 ml/data/
 ml/models/
+ml/venv/
+
+# Claude worktrees
+.claude/
 
 # OS
 .DS_Store
