@@ -2,11 +2,11 @@
 
 **PitchAI** is a machine learning system that predicts the success probability of Kickstarter crowdfunding campaigns. Upload a PDF pitch deck and get a prediction with SHAP explanations and actionable recommendations in seconds.
 
-> 🎓 MUST (Mongolian University of Science and Technology) — Information Systems Bachelor's Thesis | Badamkhand B. (B221930052)
+> MUST (Mongolian University of Science and Technology) — Information Systems Bachelor's Thesis | Badamkhand B. 
 
 ---
 
-## ✨ Features
+## Features
 
 - **PDF → Prediction** — Upload a pitch deck PDF: OCR + LLM extraction → ML prediction
 - **XGBoost + LightGBM Ensemble** — Optuna-tuned soft-voting classifier, AUC **0.7787**
@@ -18,7 +18,7 @@
 
 ---
 
-## 🧠 Model Performance
+## Model Performance
 
 | Metric | Score |
 |--------|-------|
@@ -31,7 +31,7 @@
 
 ---
 
-## 🚀 Run Locally
+## Run Locally
 
 ### Backend
 
@@ -65,7 +65,7 @@ python ml/train.py
 
 ---
 
-## 🔌 API Endpoints
+## API Endpoints
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -76,7 +76,7 @@ python ml/train.py
 
 ---
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 pitchai/
@@ -91,7 +91,7 @@ pitchai/
 
 ---
 
-## ⚙️ Tech Stack
+## Tech Stack
 
 **Backend:** Python · FastAPI · XGBoost · LightGBM · scikit-learn · SHAP · PyMuPDF · Tesseract OCR · Groq API
 
