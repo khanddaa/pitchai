@@ -1,64 +1,37 @@
-# PitchAI — Краудфандинг Төслийн Амжилтыг Таамаглах Систем
+# PitchAI — Crowdfunding Campaign Success Predictor
 
-**PitchAI** нь Kickstarter краудфандинг кампанит ажлын амжилтыг машин сургалтаар таамаглах дипломын ажлын систем юм. PDF pitch deck оруулахад хэдхэн секундын дотор амжилтын магадлал, SHAP тайлбар, зөвлөмж гаргаж өгнө.
+**PitchAI** is a machine learning system that predicts the success probability of Kickstarter crowdfunding campaigns. Upload a PDF pitch deck and get a prediction with SHAP explanations and actionable recommendations in seconds.
 
-> 🎓 МУИС — Мэдээллийн системийн дипломын ажил | Бадамханд Б. (B221930052)
-
----
-
-## ✨ Онцлог
-
-- **PDF → Таамаглал** — pitch deck PDF оруулахад OCR + LLM extraction → ML prediction
-- **XGBoost + LightGBM Ensemble** — Optuna-р тохируулсан soft-voting, AUC **0.7787**
-- **SHAP тайлбар** — ямар feature таамаглалд нөлөөлснийг харуулна
-- **Groq LLM** — `llama-3.3-70b-versatile` ашиглан PDF-ээс feature автоматаар гарган авна
-- **Монгол хэлний дэмжлэг** — Монгол PDF, Кирилл текст боловсруулна
-- **What-If шинжилгээ** — зорилт, хугацааг өөрчлөхөд магадлал хэрхэн өөрчлөгдөхийг харна
-- **React + FastAPI** — бүрэн ажилладаг full-stack веб апп
+> 🎓 MUST (Mongolian University of Science and Technology) — Information Systems Bachelor's Thesis | Badamkhand B. (B221930052)
 
 ---
 
-## 🧠 Загварын гүйцэтгэл
+## ✨ Features
 
-| Үзүүлэлт | Утга |
-|-----------|------|
+- **PDF → Prediction** — Upload a pitch deck PDF: OCR + LLM extraction → ML prediction
+- **XGBoost + LightGBM Ensemble** — Optuna-tuned soft-voting classifier, AUC **0.7787**
+- **SHAP Explanations** — Shows which features influenced the prediction and how
+- **Groq LLM Extraction** — Uses `llama-3.3-70b-versatile` to extract campaign features from PDF text
+- **Mongolian Language Support** — Handles Mongolian PDF, Cyrillic text, and MNT currency
+- **What-If Analysis** — See how changing goal or duration affects success probability
+- **Full-Stack App** — React frontend + FastAPI backend
+
+---
+
+## 🧠 Model Performance
+
+| Metric | Score |
+|--------|-------|
 | Ensemble | XGBoost + LightGBM soft-voting |
-| Сургалтын өгөгдөл | 331,675 Kickstarter кампани (2018) |
+| Training Data | 331,675 Kickstarter campaigns (2018) |
 | AUC-ROC | **0.7787** |
 | F1 Score | **0.6572** |
 | Accuracy | **70.6%** |
 | Validation | 5-fold Stratified CV |
 
-**Features (23 numerical + TF-IDF):**
-`log_goal`, `duration_days`, `launch_month`, `category`, `country`, `name_length`, `goal_bucket`, `name_capital_ratio` гэх мэт
-
 ---
 
-## 📁 Хавтасны бүтэц
-
-```
-pitchai_main2/
-├── frontend/              ← React + Vite + TypeScript + shadcn/ui
-│   └── src/
-│       ├── pages/         (UploadPage, ResultPage, AboutPage, AdminPage)
-│       ├── components/    (TopNav, ProtectedRoute)
-│       └── lib/api.ts
-│
-├── backend/               ← FastAPI REST API
-│   ├── main.py            (v4 pipeline: OCR → LLM → ML → SHAP)
-│   ├── models/            (model_v4.pkl, tfidf, encoders, config)
-│   ├── .env               (GROQ_API_KEY=...)
-│   └── requirements.txt
-│
-└── ml/                    ← Загвар сургалт
-    ├── train.py           (XGBoost + LightGBM + Optuna)
-    └── data/
-        └── ks-projects-201801.csv
-```
-
----
-
-## 🚀 Ажиллуулах
+## 🚀 Run Locally
 
 ### Backend
 
@@ -66,11 +39,11 @@ pitchai_main2/
 cd backend
 pip install -r requirements.txt
 
-# .env файлд Groq API key оруулах
-echo "GROQ_API_KEY=your_groq_key" > .env
+# Add your Groq API key
+echo "GROQ_API_KEY=your_key_here" > .env
 
 uvicorn main:app --reload --port 8000
-# → http://localhost:8000/docs
+# API docs → http://localhost:8000/docs
 ```
 
 ### Frontend
@@ -82,32 +55,46 @@ npm run dev
 # → http://localhost:5173
 ```
 
-### Загвар дахин сургах (сонголтоор)
+### Retrain the Model (optional)
 
 ```bash
-# ks-projects-201801.csv файлыг ml/data/ дотор байрлуул
-cd ml
-python train.py
-# ~30-60 мин, автоматаар backend/models/ руу copy хийнэ
+# Place ks-projects-201801.csv in ml/data/
+python ml/train.py
+# ~30–60 min — auto-copies to backend/models/
 ```
 
 ---
 
 ## 🔌 API Endpoints
 
-| Method | Path | Тайлбар |
-|--------|------|---------|
-| GET | `/` | API төлөв, загварын мэдээлэл |
-| GET | `/model-info` | Feature жагсаалт, AUC, CV үр дүн |
-| POST | `/predict` | PDF оруулж таамаглах (SHAP + зөвлөмж) |
-| POST | `/whatif` | Goal/duration өөрчлөхөд магадлал хэрхэн өөрчлөгдөх |
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/` | API status and model info |
+| GET | `/model-info` | Feature list, AUC, CV results |
+| POST | `/predict` | Upload PDF → prediction + SHAP + recommendations |
+| POST | `/whatif` | Sweep goal/duration to find optimal values |
 
 ---
 
-## ⚙️ Технологийн стек
+## 📁 Project Structure
+
+```
+pitchai/
+├── frontend/          ← React + Vite + TypeScript + shadcn/ui
+├── backend/           ← FastAPI + XGBoost + LightGBM + SHAP
+│   ├── main.py
+│   ├── models/        (model_v4.pkl, tfidf, encoders)
+│   └── requirements.txt
+└── ml/
+    └── train.py       ← Optuna hyperparameter tuning
+```
+
+---
+
+## ⚙️ Tech Stack
 
 **Backend:** Python · FastAPI · XGBoost · LightGBM · scikit-learn · SHAP · PyMuPDF · Tesseract OCR · Groq API
 
 **Frontend:** React · TypeScript · Vite · Tailwind CSS · shadcn/ui
 
-**ML:** Kickstarter 2018 dataset · Optuna hyperparameter tuning · TF-IDF (word + char n-gram)
+**ML:** Kickstarter 2018 dataset · Optuna · TF-IDF (word + char n-gram) · 5-fold CV
