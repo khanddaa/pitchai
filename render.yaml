@@ -1,10 +1,3 @@
-databases:
-  # ── PostgreSQL ─────────────────────────────────────────────
-  - name: pitchai-db
-    databaseName: pitchai
-    user: pitchai
-    plan: free
-
 services:
   # ── Backend (FastAPI) ──────────────────────────────────────
   - type: web
@@ -15,11 +8,7 @@ services:
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: GROQ_API_KEY
-        sync: false   # Render dashboard-аас оруулна
-      - key: DATABASE_URL
-        fromDatabase:
-          name: pitchai-db
-          property: connectionString
+        sync: false
     plan: free
 
   # ── Frontend (React Static) ────────────────────────────────
@@ -31,7 +20,5 @@ services:
     staticPublishPath: dist
     envVars:
       - key: VITE_API_URL
-        fromService:
-          name: pitchai-backend
-          type: web
-          property: host
+        sync: false
+    plan: free

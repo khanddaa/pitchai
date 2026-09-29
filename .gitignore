@@ -13,8 +13,11 @@ frontend/.vite/
 ml/data/
 ml/models/
 ml/venv/
-backend/models/*.pkl
-backend/models/tfidf_*.pkl
+
+# Хуучин том модел файл (127MB)
+backend/models/model_tfidf.pkl
+backend/models/tfidf_vectorizer.pkl
+backend/models/encoders.pkl
 
 # Claude worktrees
 .claude/
