@@ -2,9 +2,16 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   TrendingUp, TrendingDown, ArrowLeft, BarChart3,
-  CheckCircle, AlertCircle, History, Clock,
+  CheckCircle, AlertCircle, FileText, ChevronDown, ChevronUp,
 } from "lucide-react";
 import { DARK, PURPLE, FONT, LABELS } from "@/constants";
+
+interface ShapItem {
+  feature: string;
+  shap_value: number;
+  direction: "positive" | "negative";
+  feature_value: number;
+}
 
 interface PredictResult {
   probability: number;
@@ -13,9 +20,11 @@ interface PredictResult {
   pages: number;
   via_llm: boolean;
   model_version?: string;
+  ocr_text?: string;
   top_features: { name: string; importance: number }[];
   recommendations?: string[];
   category_success_rate?: number;
+  shap_explanation?: ShapItem[];
   extracted: {
     campaign_name: string;
     goal_usd: number;
@@ -23,6 +32,7 @@ interface PredictResult {
     main_category: string;
     category: string;
     country: string;
+    currency?: string;
   };
   extraction_notes: {
     goal_found: boolean;
@@ -30,15 +40,6 @@ interface PredictResult {
     country_found: boolean;
     via_llm: boolean;
   };
-}
-
-interface HistoryItem {
-  id: number;
-  name: string;
-  result: "successful" | "failed";
-  probability: number;
-  date: string;
-  via_llm: boolean;
 }
 
 function CampaignName({ name }: { name: string }) {
@@ -63,12 +64,37 @@ function CampaignName({ name }: { name: string }) {
   );
 }
 
-const TABS = ["Тойм", "Зөвлөмж", "Түүх"];
+const TABS = ["Тойм", "SHAP", "Зөвлөмж"];
+
+const SHAP_LABELS: Record<string, string> = {
+  log_goal:          "Зорилтот дүн",
+  duration_days:     "Хугацаа",
+  log_goal_per_day:  "Өдрийн дүн",
+  goal_x_duration:   "Дүн × Хугацаа",
+  log_duration:      "Хугацаа (log)",
+  name_length:       "Нэрийн урт",
+  name_word_count:   "Нэрийн үгийн тоо",
+  main_category_enc: "Үндсэн ангилал",
+  category_enc:      "Дэд ангилал",
+  country_enc:       "Улс",
+  is_us:             "АНУ-д байрлах эсэх",
+  launch_month:      "Эхлэх сар",
+  launch_weekday:    "Эхлэх гараг",
+  is_weekend:        "Амралтын өдөр",
+  log_goal_sq:       "Зорилтот дүн²",
+  is_goal_round:     "Дүн тэгш тоо эсэх",
+  goal_bucket:       "Дүнгийн зэрэглэл",
+  name_capital_ratio:"Том үсгийн хувь",
+  name_digit_count:  "Тооны тэмдэгт",
+  name_has_excl:     "! тэмдэгт байгаа эсэх",
+  name_has_colon:    ": тэмдэгт байгаа эсэх",
+};
 
 export default function ResultPage() {
   const navigate = useNavigate();
   const [result, setResult] = useState<PredictResult | null>(null);
   const [tab, setTab] = useState(0);
+  const [ocrOpen, setOcrOpen] = useState(false);
 
   useEffect(() => {
     const raw = sessionStorage.getItem("pitchai_result");
@@ -90,13 +116,14 @@ export default function ResultPage() {
     { label: "Үндсэн ангилал", value: result.extracted.main_category,                   found: true },
     { label: "Дэд ангилал",    value: result.extracted.category,                        found: true },
     { label: "Улс",            value: result.extracted.country,                         found: result.extraction_notes.country_found },
+    { label: "Валют",          value: result.extracted.currency || "USD",               found: true },
     { label: "Хуудас",         value: `${result.pages} хуудас`,                         found: true },
+    { label: "Олборлолт",      value: result.via_llm ? "AI (LLM)" : "Regex",            found: true },
   ];
 
-  const history: HistoryItem[] = (() => {
-    try { return JSON.parse(localStorage.getItem("pitchai_history") || "[]"); }
-    catch { return []; }
-  })();
+  // SHAP data
+  const shapItems = result.shap_explanation ?? [];
+  const maxAbs = shapItems.length > 0 ? Math.max(...shapItems.map(s => Math.abs(s.shap_value))) : 1;
 
   return (
     <div style={{ fontFamily: FONT, minHeight: "calc(100vh - 144px)" }} className="result-layout">
@@ -114,7 +141,6 @@ export default function ResultPage() {
       {/* ── LEFT ─────────────────────────────────────────── */}
       <div className="result-left animate-fade-in-up">
 
-        {/* Fixed header */}
         <p style={{ color: "#6B7280", fontSize: "14px", fontWeight: 500, marginBottom: "16px" }}>
           PitchAI IAM | Iris
         </p>
@@ -163,12 +189,8 @@ export default function ResultPage() {
               </div>
             </div>
 
-            <p style={{ fontSize: "17px", color: "#374151", lineHeight: 1.7, maxWidth: "430px", marginBottom: "12px", fontWeight: 400 }}>
-              Таны танилцуулга шинжилгээ амжилттай дууслаа.
-            </p>
-
-            <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", marginBottom: "8px" }}>
-              <p style={{ fontSize: "14px", color: "#9CA3AF", lineHeight: 1.6 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", marginBottom: "20px" }}>
+              <p style={{ fontSize: "14px", color: "#9CA3AF", lineHeight: 1.6, margin: 0 }}>
                 Шинжилгээ · {result.pages} хуудас
               </p>
               {result.category_success_rate !== undefined && (
@@ -176,12 +198,82 @@ export default function ResultPage() {
                   {result.extracted.main_category} дундаж: {Math.round(result.category_success_rate * 100)}%
                 </span>
               )}
+              <span style={{ fontSize: "11px", color: result.via_llm ? "#6d28d9" : "#6B7280", padding: "2px 8px", borderRadius: "4px", background: result.via_llm ? "#f5f3ff" : "#F3F4F6", border: `1px solid ${result.via_llm ? "#ddd6fe" : "#E5E7EB"}` }}>
+                {result.via_llm ? "AI олборлолт" : "Regex олборлолт"}
+              </span>
             </div>
+
+            {/* OCR текст */}
+            {result.ocr_text && (
+              <div style={{ marginBottom: "8px", border: "1px solid #E5E7EB", borderRadius: "10px", overflow: "hidden" }}>
+                <button
+                  onClick={() => setOcrOpen(o => !o)}
+                  style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px", background: "#F9FAFB", border: "none", cursor: "pointer", fontFamily: FONT }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                    <FileText size={13} color="#6B7280" />
+                    <span style={{ fontSize: "12px", fontWeight: 600, color: "#374151" }}>OCR текст харах</span>
+                  </div>
+                  {ocrOpen ? <ChevronUp size={14} color="#9CA3AF" /> : <ChevronDown size={14} color="#9CA3AF" />}
+                </button>
+                {ocrOpen && (
+                  <div style={{ padding: "12px 14px", background: "#fff", maxHeight: "180px", overflowY: "auto" }}>
+                    <p style={{ fontSize: "12px", color: "#6B7280", lineHeight: 1.7, margin: 0, whiteSpace: "pre-wrap" }}>
+                      {result.ocr_text}
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
           </>
         )}
 
-        {/* ── TAB 1: Зөвлөмж ───────────────────────────── */}
+        {/* ── TAB 1: SHAP ───────────────────────────────── */}
         {tab === 1 && (
+          <>
+            <p style={{ fontSize: "11px", fontWeight: 700, color: "#9CA3AF", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: "16px" }}>
+              Feature importance (SHAP) · загварын шийдвэрт нөлөөлсөн хүчин зүйлс
+            </p>
+            {shapItems.length > 0 ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px", maxWidth: "440px" }}>
+                {shapItems.map((s) => {
+                  const pct = Math.abs(s.shap_value) / maxAbs * 100;
+                  const pos = s.shap_value > 0;
+                  return (
+                    <div key={s.feature}>
+                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "3px" }}>
+                        <span style={{ fontSize: "12px", color: "#374151" }}>
+                          {SHAP_LABELS[s.feature] || s.feature}
+                        </span>
+                        <span style={{ fontSize: "11px", fontWeight: 700, color: pos ? "#16a34a" : "#dc2626" }}>
+                          {pos ? "+" : ""}{s.shap_value.toFixed(3)}
+                        </span>
+                      </div>
+                      <div style={{ height: "6px", borderRadius: "3px", background: "#F3F4F6", overflow: "hidden" }}>
+                        <div style={{
+                          height: "100%", borderRadius: "3px",
+                          width: `${pct}%`,
+                          background: pos ? "#16a34a" : "#dc2626",
+                          transition: "width 0.8s ease",
+                        }} />
+                      </div>
+                    </div>
+                  );
+                })}
+                <p style={{ fontSize: "11px", color: "#9CA3AF", marginTop: "8px" }}>
+                  🟢 Амжилтыг нэмэгдүүлэх нөлөөлөл · 🔴 Амжилтыг бууруулах нөлөөлөл
+                </p>
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", padding: "48px 0", gap: "12px" }}>
+                <BarChart3 size={32} color="#D1D5DB" />
+                <p style={{ fontSize: "15px", color: "#9CA3AF", margin: 0 }}>SHAP мэдээлэл байхгүй байна</p>
+              </div>
+            )}
+          </>
+        )}
+
+        {/* ── TAB 2: Зөвлөмж ───────────────────────────── */}
+        {tab === 2 && (
           <>
             {result.recommendations && result.recommendations.length > 0 ? (
               <div style={{ display: "flex", flexDirection: "column", gap: "10px", maxWidth: "440px" }}>
@@ -199,52 +291,6 @@ export default function ResultPage() {
               <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "48px 0", color: "#9CA3AF", gap: "12px" }}>
                 <AlertCircle size={32} color="#D1D5DB" />
                 <p style={{ fontSize: "15px", margin: 0 }}>Зөвлөмж байхгүй байна</p>
-                <p style={{ fontSize: "13px", margin: 0, color: "#D1D5DB" }}>Энэ шинжилгээнд тусгай зөвлөмж гараагүй байна.</p>
-              </div>
-            )}
-          </>
-        )}
-
-        {/* ── TAB 2: Түүх ──────────────────────────────── */}
-        {tab === 2 && (
-          <>
-            {history.length > 0 ? (
-              <div style={{ display: "flex", flexDirection: "column", gap: "8px", maxWidth: "440px" }}>
-                <p style={{ fontSize: "11px", fontWeight: 700, color: "#9CA3AF", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: "4px" }}>
-                  Өмнөх шинжилгээнүүд · {history.length} удаа
-                </p>
-                {history.map((item) => (
-                  <div key={item.id} style={{ display: "flex", alignItems: "center", gap: "12px", padding: "11px 14px", border: "1px solid #E5E7EB", borderRadius: "10px", background: "#FAFAFA" }}>
-                    <div style={{ width: "36px", height: "36px", borderRadius: "8px", background: item.result === "successful" ? "#f0fdf4" : "#fef2f2", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                      {item.result === "successful"
-                        ? <TrendingUp size={16} color="#16a34a" />
-                        : <TrendingDown size={16} color="#dc2626" />}
-                    </div>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <p style={{ fontSize: "13px", fontWeight: 600, color: DARK, margin: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {item.name}
-                      </p>
-                      <div style={{ display: "flex", alignItems: "center", gap: "8px", marginTop: "3px" }}>
-                        <Clock size={11} color="#9CA3AF" />
-                        <span style={{ fontSize: "11px", color: "#9CA3AF" }}>{item.date}</span>
-                      </div>
-                    </div>
-                    <div style={{ textAlign: "right", flexShrink: 0 }}>
-                      <p style={{ fontSize: "18px", fontWeight: 800, color: item.result === "successful" ? "#16a34a" : "#dc2626", margin: 0, letterSpacing: "-0.5px" }}>
-                        {item.probability}%
-                      </p>
-                      <p style={{ fontSize: "10px", color: "#9CA3AF", margin: "1px 0 0" }}>
-                        {item.via_llm ? "LLM" : "Regex"}
-                      </p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "48px 0", color: "#9CA3AF", gap: "12px" }}>
-                <History size={32} color="#D1D5DB" />
-                <p style={{ fontSize: "15px", margin: 0 }}>Өмнөх шинжилгээ байхгүй байна</p>
-                <p style={{ fontSize: "13px", margin: 0, color: "#D1D5DB" }}>PDF оруулж шинжилгээ хийсний дараа энд харагдана.</p>
               </div>
             )}
           </>

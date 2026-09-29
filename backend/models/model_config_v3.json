@@ -1,0 +1,32 @@
+{
+  "features_num": [
+    "log_goal",
+    "duration_days",
+    "launch_month",
+    "launch_weekday",
+    "launch_year",
+    "name_length",
+    "main_category_enc",
+    "category_enc",
+    "country_enc",
+    "currency_enc",
+    "log_goal_per_day",
+    "is_us",
+    "is_weekend",
+    "log_duration",
+    "name_word_count",
+    "goal_x_duration"
+  ],
+  "cv_auc": 0.7639047667159893,
+  "cv_f1": 0.6481450998482348,
+  "cv_acc": 0.6901665787291777,
+  "n_train": 331675,
+  "train_date": "2026-05-26T17:52:20.541119",
+  "ensemble": "XGBoost(w=3) + LogisticRegression(w=1) soft-voting",
+  "xgb_params": {
+    "n_estimators": 500,
+    "max_depth": 6,
+    "learning_rate": 0.05,
+    "scale_pos_weight": 1.476
+  }
+}

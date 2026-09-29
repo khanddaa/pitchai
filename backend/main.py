@@ -8,7 +8,7 @@ import fitz
 import pytesseract
 from PIL import Image
 import requests as http_req
-from fastapi import FastAPI, HTTPException, UploadFile, File, Request, Depends
+from fastapi import FastAPI, HTTPException, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from scipy.sparse import hstack, csr_matrix
@@ -16,14 +16,8 @@ from datetime import datetime
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
-from sqlalchemy.orm import Session
 
-from database import engine, get_db, Base
-from models_db import Prediction as PredictionRow
-
-Base.metadata.create_all(bind=engine)
-
-app = FastAPI(title="PitchAI API v2")
+app = FastAPI(title="PitchAI API v4")
 
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
@@ -39,45 +33,45 @@ app.add_middleware(
     allow_headers=["Content-Type", "Authorization"],
 )
 
-# ── MODEL paths — models/ дэд хавтсаас унших ─────────────────
+# ── Загвар paths ──────────────────────────────────────────────
 base_dir   = os.path.dirname(__file__)
 MODELS_DIR = os.path.join(base_dir, "models")
 
-MODEL_VERSION = "v2" if os.path.exists(os.path.join(MODELS_DIR, "model_v2.pkl")) else "v1"
+# v4 → v3 fallback
+if os.path.exists(os.path.join(MODELS_DIR, "model_v4.pkl")):
+    MODEL_VERSION = "v4"
+elif os.path.exists(os.path.join(MODELS_DIR, "model_v3.pkl")):
+    MODEL_VERSION = "v3"
+else:
+    raise RuntimeError("Загвар олдсонгүй! ml/train.py ажиллуулна уу.")
 
 # ── Загвар ачаалах ────────────────────────────────────────────
-if MODEL_VERSION == "v2":
-    model    = pickle.load(open(os.path.join(MODELS_DIR, "model_v2.pkl"),       "rb"))
-    tfidf_w  = pickle.load(open(os.path.join(MODELS_DIR, "tfidf_v2_word.pkl"),  "rb"))
-    tfidf_c  = pickle.load(open(os.path.join(MODELS_DIR, "tfidf_v2_char.pkl"),  "rb"))
-    encoders = pickle.load(open(os.path.join(MODELS_DIR, "encoders_v2.pkl"),    "rb"))
-    with open(os.path.join(MODELS_DIR, "model_config_v2.json")) as f:
+if MODEL_VERSION == "v4":
+    model      = pickle.load(open(os.path.join(MODELS_DIR, "model_v4.pkl"),       "rb"))
+    tfidf_word = pickle.load(open(os.path.join(MODELS_DIR, "tfidf_v4_word.pkl"),  "rb"))
+    tfidf_char = pickle.load(open(os.path.join(MODELS_DIR, "tfidf_v4_char.pkl"),  "rb"))
+    tfidf      = tfidf_word  # feature importance-д
+    encoders   = pickle.load(open(os.path.join(MODELS_DIR, "encoders_v4.pkl"),    "rb"))
+    with open(os.path.join(MODELS_DIR, "model_config_v4.json"), encoding="utf-8") as f:
         MODEL_CONFIG = json.load(f)
     FEATURES_NUM = MODEL_CONFIG["features_num"]
-    CAT_SUCCESS  = MODEL_CONFIG["cat_success_rate"]
-    print(f"✅ Model v2 loaded — AUC: {MODEL_CONFIG.get('cv_auc', '?'):.4f}, "
-          f"F1: {MODEL_CONFIG.get('cv_f1', '?'):.4f}")
+    print(f"✅ Model v4 loaded — AUC:{MODEL_CONFIG.get('cv_auc',0):.4f} "
+          f"F1:{MODEL_CONFIG.get('cv_f1',0):.4f}")
 else:
-    model    = pickle.load(open(os.path.join(MODELS_DIR, "model_tfidf.pkl"),       "rb"))
-    tfidf_w  = pickle.load(open(os.path.join(MODELS_DIR, "tfidf_vectorizer.pkl"),  "rb"))
-    tfidf_c  = None
-    encoders = pickle.load(open(os.path.join(MODELS_DIR, "encoders.pkl"),          "rb"))
-    FEATURES_NUM = [
-        'log_goal','duration_days','launch_month','launch_weekday',
-        'launch_year','name_length','main_category_enc','category_enc',
-        'country_enc','currency_enc','log_goal_per_day','is_us',
-        'is_weekend','log_duration','name_word_count','goal_x_duration'
-    ]
-    CAT_SUCCESS = {
-        "Technology":0.199,"Music":0.478,"Film & Video":0.371,"Games":0.349,
-        "Art":0.407,"Design":0.353,"Food":0.253,"Publishing":0.315,
-        "Photography":0.394,"Theater":0.639,"Comics":0.540,"Crafts":0.249,
-        "Fashion":0.242,"Journalism":0.218,"Dance":0.619,
-    }
-    MODEL_CONFIG = {}
-    print("✅ Model v1 loaded")
+    model      = pickle.load(open(os.path.join(MODELS_DIR, "model_v3.pkl"),    "rb"))
+    tfidf_word = pickle.load(open(os.path.join(MODELS_DIR, "tfidf_v3.pkl"),    "rb"))
+    tfidf_char = None
+    tfidf      = tfidf_word
+    encoders   = pickle.load(open(os.path.join(MODELS_DIR, "encoders_v3.pkl"), "rb"))
+    with open(os.path.join(MODELS_DIR, "model_config_v3.json"), encoding="utf-8") as f:
+        MODEL_CONFIG = json.load(f)
+    FEATURES_NUM = MODEL_CONFIG["features_num"]
+    print(f"✅ Model v3 loaded — AUC:{MODEL_CONFIG.get('cv_auc',0):.4f} "
+          f"F1:{MODEL_CONFIG.get('cv_f1',0):.4f}")
 
-# ── SHAP explainer (lazy init) ────────────────────────────────
+CAT_SUCCESS = MODEL_CONFIG.get("cat_success_rate", {})
+
+# ── SHAP explainer (lazy init, XGBoost component) ────────────
 _shap_explainer = None
 
 def _get_shap_explainer():
@@ -85,26 +79,20 @@ def _get_shap_explainer():
     if _shap_explainer is not None:
         return _shap_explainer
     try:
-        if MODEL_VERSION == "v2" and hasattr(model, "calibrated_classifiers_"):
-            tree_model = model.calibrated_classifiers_[0].estimator.estimators_[0]
-        else:
-            tree_model = model
-        _shap_explainer = shap.TreeExplainer(tree_model)
-        print("✅ SHAP explainer бэлэн")
+        xgb_clf = model.named_estimators_["xgb"]
+        _shap_explainer = shap.TreeExplainer(xgb_clf.get_booster())
+        print("✅ SHAP explainer бэлэн (XGBoost)")
     except Exception as e:
         print(f"⚠️  SHAP init алдаа: {e}")
     return _shap_explainer
 
-def compute_shap(x_combined, feat_dict: dict) -> list:
+def compute_shap(x_num_only, feat_dict: dict) -> list:
+    """Зөвхөн numerical features дээр SHAP тооцоолно."""
     explainer = _get_shap_explainer()
     if explainer is None:
         return []
     try:
-        try:
-            raw = explainer.shap_values(x_combined)
-        except Exception:
-            raw = explainer.shap_values(x_combined.toarray())
-        # binary class: list[neg, pos] эсвэл нэг array
+        raw = explainer.shap_values(x_num_only)
         if isinstance(raw, list):
             sv = np.asarray(raw[1]).ravel()
         else:
@@ -125,15 +113,15 @@ def compute_shap(x_combined, feat_dict: dict) -> list:
         print(f"[SHAP] {e}")
         return []
 
-# ── Groq LLM ─────────────────────────────────────────────────
+# ── Groq ─────────────────────────────────────────────────────
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 GROQ_URL     = "https://api.groq.com/openai/v1/chat/completions"
-GROQ_MODEL   = "llama-3.1-8b-instant"
+GROQ_MODEL   = "llama-3.3-70b-versatile"
 
 VALID_CATEGORIES = [
-    "Technology","Music","Film & Video","Games","Art",
-    "Design","Food","Publishing","Photography","Theater",
-    "Comics","Crafts","Fashion","Journalism","Dance",
+    "Technology","Music","Film & Video","Games","Art","Design","Food",
+    "Publishing","Photography","Theater","Comics","Crafts","Fashion",
+    "Journalism","Dance",
 ]
 
 # ─────────────────────────────────────────────────────────────
@@ -147,60 +135,61 @@ def build_features(name: str, goal: float, duration: int,
                    main_cat: str, cat: str, country: str, currency: str = "USD"):
     now = datetime.now()
 
-    # Base engineered values
     log_goal         = np.log1p(goal)
     log_goal_per_day = np.log1p(goal / max(duration, 1))
     is_us            = 1 if country == "US" else 0
     is_weekend       = 1 if now.weekday() >= 5 else 0
     log_duration     = np.log1p(duration)
     name_length      = len(name)
-    name_words       = name.split()
-    name_word_count  = len(name_words)
+    name_word_count  = len(name.split())
     goal_x_duration  = log_goal * log_duration
 
+    # v4 нэмэлт features
+    log_goal_sq       = log_goal ** 2
+    is_goal_round     = int((goal % 1000) == 0)
+    log_goal_min      = np.log1p(100)
+    log_goal_max      = np.log1p(10_000_000)
+    goal_bucket       = int(min((log_goal - log_goal_min) / (log_goal_max - log_goal_min) * 8, 7))
+    goal_bucket       = max(0, goal_bucket)
+    name_capital_ratio = sum(1 for c in name if c.isupper()) / max(len(name), 1)
+    name_digit_count  = sum(1 for c in name if c.isdigit())
+    name_has_excl     = int("!" in name)
+    name_has_colon    = int(":" in name)
+
     feat_dict = {
-        "log_goal":           log_goal,
-        "duration_days":      float(duration),
-        "launch_month":       float(now.month),
-        "launch_weekday":     float(now.weekday()),
-        "launch_year":        float(now.year),
-        "name_length":        float(name_length),
-        "main_category_enc":  float(safe_encode(encoders["main_category"], main_cat)),
-        "category_enc":       float(safe_encode(encoders["category"],      cat)),
-        "country_enc":        float(safe_encode(encoders["country"],       country)),
-        "currency_enc":       float(safe_encode(encoders["currency"],      currency)),
-        "log_goal_per_day":   log_goal_per_day,
-        "is_us":              float(is_us),
-        "is_weekend":         float(is_weekend),
-        "log_duration":       log_duration,
-        "name_word_count":    float(name_word_count),
-        "goal_x_duration":    goal_x_duration,
-        # v2 new features
-        "cat_success_rate":   CAT_SUCCESS.get(main_cat, 0.35),
-        "is_goal_round":      float((goal % 1000) == 0),
-        "name_avg_word_len":  float(np.mean([len(w) for w in name_words]) if name_words else 0),
-        "name_capital_ratio": float(sum(1 for c in name if c.isupper()) / max(len(name), 1)),
-        "name_digit_count":   float(sum(c.isdigit() for c in name)),
-        "name_has_excl":      float("!" in name),
-        "name_has_colon":     float(":" in name),
-        "goal_bucket":        float(min(int(log_goal / (np.log1p(10_000_000) / 8)), 7)),
-        "log_goal_sq":        log_goal ** 2,
-        "goal_x_success_rate": log_goal * CAT_SUCCESS.get(main_cat, 0.35),
-        "dur_x_success_rate":  duration   * CAT_SUCCESS.get(main_cat, 0.35),
+        "log_goal":            log_goal,
+        "duration_days":       float(duration),
+        "launch_month":        float(now.month),
+        "launch_weekday":      float(now.weekday()),
+        "launch_year":         float(now.year),
+        "name_length":         float(name_length),
+        "main_category_enc":   float(safe_encode(encoders["main_category"], main_cat)),
+        "category_enc":        float(safe_encode(encoders["category"],      cat)),
+        "country_enc":         float(safe_encode(encoders["country"],       country)),
+        "currency_enc":        float(safe_encode(encoders["currency"],      currency)),
+        "log_goal_per_day":    log_goal_per_day,
+        "is_us":               float(is_us),
+        "is_weekend":          float(is_weekend),
+        "log_duration":        log_duration,
+        "name_word_count":     float(name_word_count),
+        "goal_x_duration":     goal_x_duration,
+        "log_goal_sq":         log_goal_sq,
+        "is_goal_round":       float(is_goal_round),
+        "goal_bucket":         float(goal_bucket),
+        "name_capital_ratio":  name_capital_ratio,
+        "name_digit_count":    float(name_digit_count),
+        "name_has_excl":       float(name_has_excl),
+        "name_has_colon":      float(name_has_colon),
     }
 
-    # Build numerical vector in correct feature order
-    x_num = np.array([[feat_dict.get(f, 0.0) for f in FEATURES_NUM]], dtype=np.float32)
+    x_num  = np.array([[feat_dict[f] for f in FEATURES_NUM]], dtype=np.float32)
+    x_word = tfidf_word.transform([name])
+    parts  = [csr_matrix(x_num), x_word]
+    if tfidf_char is not None:
+        parts.append(tfidf_char.transform([name]))
+    x_combined = hstack(parts)
 
-    # Text features
-    x_word = tfidf_w.transform([name])
-    x_combined = hstack([csr_matrix(x_num), x_word])
-    if tfidf_c is not None:
-        x_char = tfidf_c.transform([name])
-        x_combined = hstack([x_combined, x_char])
-
-    return x_combined, feat_dict
-
+    return x_combined, x_num, feat_dict
 
 # ─────────────────────────────────────────────────────────────
 # MONGOLIAN DETECTION & TRANSLATION
@@ -208,8 +197,8 @@ def build_features(name: str, goal: float, duration: int,
 def is_mongolian(text: str) -> bool:
     if not text:
         return False
-    mon_chars = sum(1 for c in text if "Ѐ" <= c <= "ӿ")
-    return (mon_chars / len(text)) > 0.30
+    mon = sum(1 for c in text if "Ѐ" <= c <= "ӿ")
+    return (mon / len(text)) > 0.30
 
 def translate_to_english(name: str, api_key: str) -> str:
     if not api_key:
@@ -220,26 +209,20 @@ def translate_to_english(name: str, api_key: str) -> str:
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
             json={
                 "model": GROQ_MODEL,
-                "messages": [{
-                    "role": "user",
-                    "content": (
-                        f"Translate this Mongolian crowdfunding campaign name to English. "
-                        f"Return only the translated name, nothing else.\n\nName: {name}"
-                    ),
+                "messages": [{"role": "user", "content":
+                    f"Translate this Mongolian crowdfunding campaign name to English. "
+                    f"Return only the translated name, nothing else.\n\nName: {name}"
                 }],
-                "temperature": 0.1,
-                "max_tokens": 60,
+                "temperature": 0.1, "max_tokens": 60,
             },
             timeout=10,
         )
         if resp.status_code == 200:
-            translated = resp.json()["choices"][0]["message"]["content"].strip()
-            if translated:
-                return translated
+            t = resp.json()["choices"][0]["message"]["content"].strip()
+            if t: return t
     except Exception as e:
         print(f"[translate] {e}")
     return name
-
 
 # ─────────────────────────────────────────────────────────────
 # LLM EXTRACTION
@@ -248,40 +231,43 @@ def llm_extract(text: str) -> dict | None:
     if not GROQ_API_KEY:
         return None
     sample = text[:4000]
-    prompt = f"""Та краудфандинг pitch deck PDF-ийн текстийг шинжлэх үүрэгтэй.
+    mn_ratio = sum(1 for c in sample if "Ѐ" <= c <= "ӿ") / max(len(sample), 1)
+    default_country = "MN" if mn_ratio > 0.05 else "US"
+    prompt = f"""You are analyzing a crowdfunding pitch deck PDF. The text may be in Mongolian or English.
 
-Доорх текстээс дараах мэдээллийг олж, яг JSON форматаар буцаана уу:
+Extract the following fields and return ONLY a JSON object:
 
 {{
-  "campaign_name": "кампанит ажлын нэр",
+  "campaign_name": "campaign title",
   "goal_usd": 10000,
   "duration_days": 30,
   "main_category": "Technology",
   "category": "Apps",
-  "country": "MN",
+  "country": "{default_country}",
   "currency": "USD"
 }}
 
-Дүрмүүд:
-- campaign_name: текстийн эхний гарчиг эсвэл нэр (string)
-- goal_usd: зорилтот дүн АНУ доллараар (₮ байвал 1$=3450₮; олдоогүй → 10000)
-- duration_days: хугацаа өдрөөр 1-90 (олдоогүй → 30)
+Rules:
+- campaign_name: first heading or title (string)
+- goal_usd: funding goal in USD (₮ → divide by 3450; not found → null)
+- duration_days: campaign length in days 1-90 (not found → null)
 - main_category: Technology|Music|Film & Video|Games|Art|Design|Food|Publishing|Photography|Theater|Comics|Crafts|Fashion|Journalism|Dance
-- category: дэд ангилал (Apps, Album, Short Film г.м.)
-- country: ISO-2 (Монгол→MN, АНУ→US; олдоогүй→MN)
-- currency: USD|MNT|EUR|GBP|CAD|AUD (олдоогүй→USD)
+- category: subcategory (Apps, Album, Short Film, etc.)
+- country: ISO-2 code (Mongolia→MN, USA→US, UK→GB; not found→{default_country})
+- currency: USD|MNT|EUR|GBP|CAD|AUD (not found→USD)
 
-Зөвхөн JSON объект буцаана уу. Тайлбар бичихгүй.
+Return ONLY the JSON object, no explanation.
 
-Текст:
+Text:
 {sample}"""
 
     try:
         resp = http_req.post(
             GROQ_URL,
             headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
-            json={"model": GROQ_MODEL, "messages": [{"role": "user", "content": prompt}],
-                  "temperature": 0.1, "max_tokens": 300},
+            json={"model": GROQ_MODEL,
+                  "messages": [{"role": "user", "content": prompt}],
+                  "temperature": 0, "max_tokens": 300},
             timeout=20,
         )
         if resp.status_code != 200:
@@ -300,12 +286,10 @@ def llm_extract(text: str) -> dict | None:
             main_cat = "Technology"
 
         goal = float(data.get("goal_usd", 10000))
-        if not (100 <= goal <= 10_000_000):
-            goal = 10000.0
+        if not (100 <= goal <= 10_000_000): goal = 10000.0
 
         dur = int(data.get("duration_days", 30))
-        if not (1 <= dur <= 92):
-            dur = 30
+        if not (1 <= dur <= 92): dur = 30
 
         currency = str(data.get("currency", "USD"))
         if currency == "MNT":
@@ -325,72 +309,73 @@ def llm_extract(text: str) -> dict | None:
         print(f"[LLM] {e}")
         return None
 
-
 # ─────────────────────────────────────────────────────────────
 # REGEX FALLBACK
 # ─────────────────────────────────────────────────────────────
 CATEGORY_KEYWORDS = {
-    "Technology":  ["app","software","tech","hardware","device","robot","ai","platform","digital","iot",
-                    "технологи","програм","апп","хиймэл","оюун","платформ","дижитал"],
-    "Music":       ["album","music","song","band","concert","record","ep","musician",
-                    "хөгжим","дуу","дуурь","уртын дуу","концерт"],
-    "Film & Video":["film","movie","documentary","video","cinema","animation","series",
-                    "кино","видео","баримтат","анимаци"],
-    "Games":       ["game","board game","card game","rpg","tabletop","puzzle","arcade",
-                    "тоглоом"],
-    "Art":         ["art","painting","sculpture","gallery","exhibition","artist","illustration",
-                    "урлаг","зураг","баримал","үзэсгэлэн"],
-    "Design":      ["design","product","prototype","industrial","furniture",
-                    "дизайн","загвар","бүтээгдэхүүн"],
-    "Food":        ["food","restaurant","cafe","recipe","cooking","beverage","organic",
-                    "хоол","хүнс","ресторан","кафе","ундаа"],
-    "Publishing":  ["book","novel","comic","magazine","poetry","writer","author",
-                    "ном","зохиол","хэвлэл","шүлэг"],
-    "Photography": ["photo","photography","camera","portrait","landscape",
-                    "фото","зургийн"],
-    "Theater":     ["theater","play","performance","stage","musical",
-                    "театр","жүжиг","тайз"],
-    "Crafts":      ["craft","handmade","knit","sew","pottery","ceramic","jewelry",
-                    "гар урлал","нэхмэл","шаазан"],
-    "Fashion":     ["fashion","clothing","apparel","style","collection","accessory",
-                    "хувцас","загварын"],
-    "Journalism":  ["journalism","news","media","podcast","newsletter",
-                    "мэдээ","сэтгүүлзүй","медиа","подкаст"],
-    "Dance":       ["dance","choreography","ballet","hip hop","contemporary",
-                    "бүжиг","хореографи"],
+    "Technology":   ["app","software","tech","hardware","device","robot","ai","platform","digital","iot",
+                     "технологи","програм","апп","хиймэл оюун","платформ"],
+    "Music":        ["album","music","song","band","concert","record","ep","musician",
+                     "хөгжим","дуу","концерт","цомог"],
+    "Film & Video": ["film","movie","documentary","video","cinema","animation","series",
+                     "кино","видео","баримтат","анимаци"],
+    "Games":        ["game","board game","card game","rpg","tabletop","puzzle",
+                     "тоглоом"],
+    "Art":          ["art","painting","sculpture","gallery","exhibition","artist","illustration",
+                     "урлаг","зураг","баримал","үзэсгэлэн"],
+    "Design":       ["design","product","prototype","industrial","furniture",
+                     "дизайн","загвар","бүтээгдэхүүн"],
+    "Food":         ["food","restaurant","cafe","recipe","cooking","beverage","organic",
+                     "хоол","хүнс","ресторан","кафе","ундаа"],
+    "Publishing":   ["book","novel","magazine","poetry","writer","author",
+                     "ном","зохиол","хэвлэл","шүлэг"],
+    "Photography":  ["photo","photography","camera","portrait","landscape",
+                     "фото","зургийн"],
+    "Theater":      ["theater","play","performance","stage","musical",
+                     "театр","жүжиг","тайз"],
+    "Comics":       ["comic","manga","illustration","graphic novel","комик","зурагт ном"],
+    "Crafts":       ["craft","handmade","knit","sew","pottery","ceramic","jewelry",
+                     "гар урлал","нэхмэл","шаазан"],
+    "Fashion":      ["fashion","clothing","apparel","style","collection",
+                     "хувцас","загварын"],
+    "Journalism":   ["journalism","news","media","podcast","newsletter",
+                     "мэдээ","сэтгүүлзүй","медиа","подкаст"],
+    "Dance":        ["dance","choreography","ballet","hip hop","contemporary",
+                     "бүжиг","хореографи"],
 }
 
 def _regex_goal(text: str) -> float | None:
     patterns = [
-        r'([\d,]+(?:\.\d+)?)\s*(?:төгрөг|₮)',
-        r'(?:зорилт|санхүүжилт|дүн|хэмжээ)[^\d₮$]*([₮$]?\s*[\d,]+(?:\.\d+)?)',
-        r'(?:goal|target|raise|seeking|funding)[^\d$]*\$\s*([\d,]+(?:\.\d+)?)\s*(?:thousand|k|million|m)?',
-        r'\$\s*([\d,]+(?:\.\d+)?)\s*(?:thousand|k|million|m)?',
-        r'([\d,]+(?:\.\d+)?)\s*(?:USD|usd|dollars?)',
+        (r"([\d,]+(?:\.\d+)?)\s*(?:төгрөг|₮)", 1/3450),
+        (r"(?:зорилт|санхүүжилт|дүн)[^\d₮$]*([₮$]?\s*[\d,]+)", 1.0),
+        (r"(?:goal|target|raise|seeking)\s*[:\-]?\s*\$\s*([\d,]+(?:\.\d+)?)\s*(k|thousand|m|million)?", 1.0),
+        (r"\$\s*([\d,]+(?:\.\d+)?)\s*(k|thousand|m|million)?", 1.0),
+        (r"([\d,]+(?:\.\d+)?)\s*(?:USD|usd|dollars?)", 1.0),
     ]
-    for i, pat in enumerate(patterns):
+    for pat, mul in patterns:
         m = re.search(pat, text, re.IGNORECASE)
-        if m:
-            raw = re.sub(r'[₮$,\s]','', m.group(1))
-            try:
-                val = float(raw)
-                suffix = m.group(0).lower()
-                if 'million' in suffix or ' m' in suffix: val *= 1_000_000
-                elif 'thousand' in suffix or ' k' in suffix: val *= 1_000
-                if i == 0: val = val / 3450
-                if 100 <= val <= 10_000_000: return round(val, 2)
-            except: continue
+        if not m: continue
+        raw = re.sub(r"[₮$,\s]", "", m.group(1))
+        try:
+            val = float(raw) * mul
+            if len(m.groups()) >= 2 and m.group(2):
+                sfx = m.group(2).lower()
+                if sfx in ("m","million"): val *= 1_000_000
+                elif sfx in ("k","thousand"): val *= 1_000
+            if 100 <= val <= 10_000_000: return round(val, 2)
+        except: continue
     return None
 
 def _regex_duration(text: str) -> int | None:
-    for i, pat in enumerate([
-        r'(\d+)\s*(?:хоног|өдөр)', r'(\d+)\s*долоо хоног',
-        r'(\d+)\s*-?\s*day', r'(\d+)\s*week',
-    ]):
+    for pat, mul in [
+        (r"(\d+)\s*(?:хоног|өдөр)", 1),
+        (r"(\d+)\s*долоо\s*хоног", 7),
+        (r"(\d+)\s*-?\s*(?:day|days)", 1),
+        (r"(\d+)\s*(?:week|weeks)", 7),
+    ]:
         m = re.search(pat, text, re.IGNORECASE)
         if m:
-            val = int(m.group(1))
-            if i in (1, 3): val *= 7
+            val = int(m.group(1)) * mul
             if 1 <= val <= 92: return val
     return None
 
@@ -399,50 +384,49 @@ def _regex_category(text: str) -> tuple[str, str]:
     scores = {cat: sum(1 for kw in kws if kw in tl)
               for cat, kws in CATEGORY_KEYWORDS.items()}
     scores = {k: v for k, v in scores.items() if v > 0}
-    if scores:
-        best = max(scores, key=scores.get)
-        sub  = max(CATEGORY_KEYWORDS[best], key=lambda k: tl.count(k))
-        return best, sub.title()
-    return "Technology", "Apps"
+    if not scores: return "Technology", "Apps"
+    best = max(scores, key=scores.get)
+    sub  = max(CATEGORY_KEYWORDS[best], key=lambda k: tl.count(k))
+    return best, sub.title()
 
 COUNTRY_MAP = {
-    "монгол улс": "MN", "монгол": "MN", "улаанбаатар": "MN", "mongolia": "MN",
-    "united states": "US", "usa": "US", "united kingdom": "GB", "canada": "CA",
-    "australia": "AU", "germany": "DE", "france": "FR", "japan": "JP",
+    "монгол улс":"MN","монгол":"MN","улаанбаатар":"MN","mongolia":"MN",
+    "united states":"US","usa":"US","united kingdom":"GB","canada":"CA",
+    "australia":"AU","germany":"DE","france":"FR","japan":"JP",
 }
 
 def regex_extract(text: str) -> dict:
     main_cat, cat = _regex_category(text)
-    lines = [l.strip() for l in text.split('\n') if len(l.strip()) > 3]
+    lines = [l.strip() for l in text.split("\n") if len(l.strip()) > 3]
     tl = text.lower()
+    mn_ratio = sum(1 for c in text if "Ѐ" <= c <= "ӿ") / max(len(text), 1)
+    default_country = "MN" if mn_ratio > 0.05 else "US"
     return {
         "campaign_name": lines[0][:120] if lines else "Untitled Campaign",
         "goal_usd":      _regex_goal(text),
         "duration_days": _regex_duration(text),
         "main_category": main_cat,
         "category":      cat,
-        "country":       next((code for phrase, code in COUNTRY_MAP.items() if phrase in tl), "MN"),
+        "country":       next((code for phrase, code in COUNTRY_MAP.items() if phrase in tl), default_country),
         "currency":      "USD",
         "via_llm":       False,
     }
-
 
 # ─────────────────────────────────────────────────────────────
 # ENDPOINTS
 # ─────────────────────────────────────────────────────────────
 @app.get("/")
 def root():
-    llm_status = "✅ Groq LLM идэвхтэй" if GROQ_API_KEY else "⚠️  Regex горим"
     return {
-        "status":  "ok",
+        "status": "ok",
         "message": "PitchAI API ажиллаж байна",
-        "llm":     llm_status,
-        "model":   MODEL_VERSION,
+        "model": MODEL_VERSION,
+        "llm": "✅ Groq LLM идэвхтэй" if GROQ_API_KEY else "⚠️  Regex горим",
         "model_info": {
-            "version":  MODEL_VERSION,
-            "cv_auc":   MODEL_CONFIG.get("cv_auc"),
-            "cv_f1":    MODEL_CONFIG.get("cv_f1"),
-            "ensemble": MODEL_CONFIG.get("ensemble_weights"),
+            "version":    MODEL_VERSION,
+            "cv_auc":     MODEL_CONFIG.get("cv_auc"),
+            "cv_f1":      MODEL_CONFIG.get("cv_f1"),
+            "ensemble":   MODEL_CONFIG.get("ensemble"),
             "n_features": len(FEATURES_NUM),
         }
     }
@@ -457,13 +441,13 @@ def model_info():
         "cv_f1":      MODEL_CONFIG.get("cv_f1"),
         "n_train":    MODEL_CONFIG.get("n_train"),
         "train_date": MODEL_CONFIG.get("train_date"),
-        "ensemble":   MODEL_CONFIG.get("ensemble_weights"),
+        "ensemble":   MODEL_CONFIG.get("ensemble"),
         "cat_success_rates": CAT_SUCCESS,
     }
 
 @app.post("/predict")
 @limiter.limit("5/minute")
-async def predict(request: Request, file: UploadFile = File(...), db: Session = Depends(get_db)):
+async def predict(request: Request, file: UploadFile = File(...)):
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(400, "Зөвхөн PDF файл оруулна уу")
 
@@ -472,30 +456,33 @@ async def predict(request: Request, file: UploadFile = File(...), db: Session = 
     pages = len(doc)
     text = "\n".join(page.get_text() for page in doc)
 
+    # OCR fallback
     if len(text.strip()) < 30:
-        # Scanned PDF — OCR fallback at 300 DPI
-        mat = fitz.Matrix(300 / 72, 300 / 72)
+        mat = fitz.Matrix(300/72, 300/72)
         ocr_parts = []
         for page in doc:
             pix = page.get_pixmap(matrix=mat)
             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-            ocr_parts.append(pytesseract.image_to_string(img, lang="mon+eng"))
+            try:
+                ocr_parts.append(pytesseract.image_to_string(img, lang="mon+eng"))
+            except Exception:
+                ocr_parts.append(pytesseract.image_to_string(img, lang="eng"))
         text = "\n".join(ocr_parts)
 
     if len(text.strip()) < 30:
-        raise HTTPException(422, "PDF-ээс текст гаргаж чадсангүй (зургаар хийгдсэн PDF байж болзошгүй)")
+        raise HTTPException(422, "PDF-ээс текст гаргаж чадсангүй")
 
     # Extraction: LLM → regex fallback
     regex_raw = regex_extract(text)
     extracted = llm_extract(text) or regex_raw
     via_llm   = extracted is not regex_raw
 
-    goal_found = via_llm or regex_raw["goal_usd"] is not None
-    dur_found  = via_llm or regex_raw["duration_days"] is not None
+    goal_found = via_llm or (regex_raw["goal_usd"] is not None)
+    dur_found  = via_llm or (regex_raw["duration_days"] is not None)
 
     name     = extracted["campaign_name"]
-    goal     = float(extracted["goal_usd"] or 10000.0)
-    duration = int(extracted["duration_days"] or 30)
+    goal     = float(extracted["goal_usd"]     or 10_000.0)
+    duration = int(extracted["duration_days"]   or 30)
     main_cat = extracted["main_category"]
     cat      = extracted["category"]
     country  = extracted["country"]
@@ -505,81 +492,88 @@ async def predict(request: Request, file: UploadFile = File(...), db: Session = 
         kw in text.lower() for kw in ["монгол","mongolia","улаанбаатар","ulaanbaatar"]
     )
 
-    # Translate Mongolian campaign name so TF-IDF vocab matches
+    # Монгол нэрийг TF-IDF-д зориулж орчуулах
     if is_mongolian(name):
         name = translate_to_english(name, GROQ_API_KEY)
 
     # Predict
-    x, feat_dict = build_features(name, goal, duration, main_cat, cat, country, currency)
-    prob      = float(model.predict_proba(x)[0][1])
+    x_combined, x_num, feat_dict = build_features(
+        name, goal, duration, main_cat, cat, country, currency
+    )
+    prob      = float(model.predict_proba(x_combined)[0][1])
     pred      = "successful" if prob >= 0.5 else "failed"
     conf      = "өндөр" if abs(prob - 0.5) > 0.2 else "дунд"
-    shap_vals = compute_shap(x, feat_dict)
+    shap_vals = compute_shap(x_num, feat_dict)
 
-    # Feature importance — show numerical features
-    if MODEL_VERSION == "v2" and hasattr(model, "calibrated_classifiers_"):
-        # Calibrated model — get from base estimator
-        base_est = model.calibrated_classifiers_[0].estimator
-        # VotingClassifier — use XGBoost component
-        try:
-            fi = base_est.estimators_[0].feature_importances_
-        except Exception:
-            fi = np.ones(len(FEATURES_NUM)) / len(FEATURES_NUM)
-    else:
-        fi = model.feature_importances_
-
-    feat_names_all = FEATURES_NUM + list(tfidf_w.get_feature_names_out())
-    if tfidf_c is not None:
-        feat_names_all += list(tfidf_c.get_feature_names_out())
-
-    n = min(len(fi), len(feat_names_all))
-    top5 = sorted(zip(feat_names_all[:n], fi[:n]), key=lambda x: -x[1])[:5]
-
-    # Recommendations
-    recs = []
-    cat_rate = CAT_SUCCESS.get(main_cat, 0.35)
-    if goal > 50000:
-        recs.append(f"Зорилтот дүн өндөр (${goal:,.0f}) — $50,000-с доош болгоход амжилтын магадлал нэмэгдэнэ")
-    if duration > 45:
-        recs.append("Хугацаа хэт урт — 30–35 хоног хамгийн оновчтой")
-    if cat_rate < 0.3:
-        recs.append(f"{main_cat} ангиллын амжилтын түүхэн хувь бага ({cat_rate:.0%}) — ангилал сонголтоо нягтлаарай")
-    if goal > 0 and duration > 0:
-        daily = goal / duration
-        if daily > 3000:
-            recs.append(f"Өдөрт ${daily:,.0f} шаардлагатай — маш өндөр. Зорилтот дүн эсвэл хугацааг тохируулна уу")
-
+    # Feature importance (XGBoost component)
     try:
-        db.add(PredictionRow(
-            campaign_name=name,
-            goal_usd=goal,
-            duration_days=duration,
-            main_category=main_cat,
-            category=cat,
-            country=country,
-            probability=round(prob * 100, 1),
-            prediction=pred,
-            model_version=MODEL_VERSION,
-            via_llm=via_llm,
-            filename=file.filename,
-        ))
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        print(f"[DB] Хадгалах алдаа: {e}")
+        xgb_clf = model.named_estimators_["xgb"]
+        fi = xgb_clf.feature_importances_
+        word_names = list(tfidf_word.get_feature_names_out())
+        char_names = list(tfidf_char.get_feature_names_out()) if tfidf_char else []
+        feat_names_all = FEATURES_NUM + word_names + char_names
+        n = min(len(fi), len(feat_names_all))
+        top5 = sorted(zip(feat_names_all[:n], fi[:n]), key=lambda x: -x[1])[:5]
+    except Exception:
+        top5 = []
+
+    # Зөвлөмж
+    recs = []
+    daily = goal / max(duration, 1)
+
+    # 1. Зорилтот дүн
+    if goal > 50_000:
+        recs.append(f"Зорилтот дүн өндөр (${goal:,.0f}) — $10,000–$50,000 хүрээнд тавихад амжилтын магадлал мэдэгдэхүйц нэмэгддэг")
+    elif goal <= 5_000:
+        recs.append(f"Зорилтот дүн бага (${goal:,.0f}) — энэ нь сайн, бага зорилт нь амжилттай болох магадлалыг нэмэгдүүлдэг")
+    else:
+        recs.append(f"Зорилтот дүн (${goal:,.0f}) нь оновчтой хүрээнд байна — Kickstarter-ийн дундаж амжилттай кампани $10,000 орчим байдаг")
+
+    # 2. Хугацаа
+    if duration < 15:
+        recs.append(f"Хугацаа хэт богино ({duration} өдөр) — 25–35 хоног нь дэмжигч цуглуулахад хамгийн тохиромжтой")
+    elif duration > 45:
+        recs.append(f"Хугацаа хэт урт ({duration} өдөр) — 30–35 хоног нь хамгийн оновчтой, урт хугацаа сонирхлыг бууруулдаг")
+    else:
+        recs.append(f"Хугацаа ({duration} өдөр) нь тохиромжтой — 25–35 хоногийн хугацаатай кампани хамгийн өндөр амжилтын хувьтай байдаг")
+
+    # 3. Өдрийн зорилт
+    if daily > 2_000:
+        recs.append(f"Өдөрт ${daily:,.0f} шаардлагатай — энэ нь маш өндөр. Зорилтот дүнг бууруулах эсвэл хугацааг уртасгахыг зөвлөж байна")
+
+    # 4. Ангилал
+    cat_success = {
+        "Technology": 0.20, "Music": 0.48, "Film & Video": 0.37, "Games": 0.35,
+        "Art": 0.41, "Design": 0.35, "Food": 0.25, "Publishing": 0.32,
+        "Photography": 0.39, "Theater": 0.64, "Comics": 0.54, "Crafts": 0.25,
+        "Fashion": 0.24, "Journalism": 0.22, "Dance": 0.62,
+    }
+    cat_rate = cat_success.get(main_cat, 0.35)
+    if cat_rate >= 0.5:
+        recs.append(f"{main_cat} ангилал нь Kickstarter дээр өндөр амжилтын түүхтэй ({cat_rate:.0%}) — энэ нь таны кампанид давуу тал")
+    elif cat_rate < 0.3:
+        recs.append(f"{main_cat} ангиллын Kickstarter дээрх амжилтын дундаж хувь бага ({cat_rate:.0%}) — өрсөлдөгчдөөсөө ялгарах онцлогоо тодотгоорой")
+
+    # 5. Магадлалд суурилсан ерөнхий зөвлөмж
+    if prob < 0.4:
+        recs.append("Амжилтын магадлал бага байна — нийгмийн сүлжээ, PR кампанит ажил болон урьдчилсан дэмжигчийн баазыг бэхжүүлэхийг зөвлөж байна")
+    elif prob >= 0.7:
+        recs.append("Амжилтын магадлал өндөр байна — шагналын системийн давхаргыг (reward tiers) сайтар тохируулж, эхний 48 цагийн идэвхжилтэд анхаарлаа хандуулаарай")
 
     return {
-        "probability":  round(prob * 100, 1),
-        "prediction":   pred,
-        "confidence":   conf,
-        "pages":        pages,
-        "via_llm":      via_llm,
+        "probability":   round(prob*100, 1),
+        "prediction":    pred,
+        "confidence":    conf,
+        "pages":         pages,
+        "via_llm":       via_llm,
         "model_version": MODEL_VERSION,
-        "top_features": [{"name": n, "importance": round(v * 100, 1)} for n, v in top5],
+        "ocr_text":      text[:2000],
+        "top_features":  [{"name": n, "importance": round(v*100,1)} for n,v in top5],
         "recommendations": recs,
         "extracted": {
             "campaign_name": name, "goal_usd": goal, "duration_days": duration,
             "main_category": main_cat, "category": cat, "country": country,
+            "currency": currency,
         },
         "extraction_notes": {
             "goal_found": goal_found, "duration_found": dur_found,
@@ -589,40 +583,8 @@ async def predict(request: Request, file: UploadFile = File(...), db: Session = 
         "shap_explanation": shap_vals,
     }
 
-
 # ─────────────────────────────────────────────────────────────
-# HISTORY ENDPOINT
-# ─────────────────────────────────────────────────────────────
-@app.get("/history")
-def history(limit: int = 50, db: Session = Depends(get_db)):
-    rows = (
-        db.query(PredictionRow)
-        .order_by(PredictionRow.created_at.desc())
-        .limit(min(limit, 200))
-        .all()
-    )
-    return [
-        {
-            "id":            r.id,
-            "campaign_name": r.campaign_name,
-            "goal_usd":      r.goal_usd,
-            "duration_days": r.duration_days,
-            "main_category": r.main_category,
-            "category":      r.category,
-            "country":       r.country,
-            "probability":   r.probability,
-            "prediction":    r.prediction,
-            "model_version": r.model_version,
-            "via_llm":       r.via_llm,
-            "filename":      r.filename,
-            "created_at":    r.created_at.isoformat(),
-        }
-        for r in rows
-    ]
-
-
-# ─────────────────────────────────────────────────────────────
-# WHAT-IF ENDPOINT
+# WHAT-IF
 # ─────────────────────────────────────────────────────────────
 class WhatIfRequest(BaseModel):
     campaign_name: str
@@ -639,21 +601,18 @@ async def whatif(req: WhatIfRequest):
         raise HTTPException(400, f"main_category must be one of {VALID_CATEGORIES}")
 
     def _prob(goal: float, dur: int) -> float:
-        xw, _ = build_features(
+        x, _, _ = build_features(
             req.campaign_name, goal, dur,
             req.main_category, req.category, req.country, req.currency,
         )
-        return round(float(model.predict_proba(xw)[0][1]) * 100, 1)
+        return round(float(model.predict_proba(x)[0][1]) * 100, 1)
 
     base_prob = _prob(req.goal_usd, req.duration_days)
 
-    # Goal sweep — 7 нүд: 25 % → 400 % of requested goal
     goal_sweep = [
-        {"goal_usd": round(req.goal_usd * f, 2), "probability": _prob(req.goal_usd * f, req.duration_days)}
+        {"goal_usd": round(req.goal_usd*f,2), "probability": _prob(req.goal_usd*f, req.duration_days)}
         for f in [0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 4.0]
     ]
-
-    # Duration sweep — тогтмол өдрүүд
     dur_sweep = [
         {"duration_days": d, "probability": _prob(req.goal_usd, d)}
         for d in [7, 14, 21, 30, 45, 60, 90]

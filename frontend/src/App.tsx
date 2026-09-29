@@ -6,9 +6,6 @@ import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Moon, Sun } from "lucide-react";
 import TopNav from "@/components/TopNav";
-import ProtectedRoute from "@/components/ProtectedRoute";
-import { AuthProvider } from "@/context/AuthContext";
-import LoginPage from "./pages/LoginPage";
 import UploadPage from "./pages/UploadPage";
 import ResultPage from "./pages/ResultPage";
 import AdminPage from "./pages/AdminPage";
@@ -49,47 +46,34 @@ const App = () => (
       <Toaster />
       <Sonner richColors position="top-right"/>
       <BrowserRouter>
-        <AuthProvider>
+        <div style={{ minHeight: "100vh", background: "#fff" }}>
+          <TopNav />
           <Routes>
-            <Route path="/login" element={<LoginPage />} />
-            <Route path="/*" element={
-              <ProtectedRoute>
-                <div style={{ minHeight: "100vh", background: "#fff" }}>
-                  <TopNav />
-                  <Routes>
-                    {/* Scrollable landing page */}
-                    <Route path="/"       element={
-                      <div style={{ height: "calc(100vh - 144px)", overflowY: "auto" }}>
-                        <UploadPage />
-                      </div>
-                    } />
-                    <Route path="/result"  element={<ResultPage />} />
-                    <Route path="/about"  element={
-                      <div style={{ height: "calc(100vh - 144px)", overflowY: "auto" }}>
-                        <AboutPage />
-                      </div>
-                    } />
-                    <Route path="/pricing" element={
-                      <div style={{ height: "calc(100vh - 144px)", overflowY: "auto" }}>
-                        <PricingPage />
-                      </div>
-                    } />
-
-                    {/* Scrollable page */}
-                    <Route path="/admin"  element={
-                      <div style={{ height: "calc(100vh - 144px)", overflowY: "auto" }}>
-                        <AdminPage />
-                      </div>
-                    } />
-
-                    <Route path="*" element={<NotFound />} />
-                  </Routes>
-                  <ThemeToggle />
-                </div>
-              </ProtectedRoute>
+            <Route path="/" element={
+              <div style={{ height: "calc(100vh - 144px)", overflowY: "auto" }}>
+                <UploadPage />
+              </div>
             } />
+            <Route path="/result"  element={<ResultPage />} />
+            <Route path="/about"  element={
+              <div style={{ height: "calc(100vh - 144px)", overflowY: "auto" }}>
+                <AboutPage />
+              </div>
+            } />
+            <Route path="/pricing" element={
+              <div style={{ height: "calc(100vh - 144px)", overflowY: "auto" }}>
+                <PricingPage />
+              </div>
+            } />
+            <Route path="/admin"  element={
+              <div style={{ height: "calc(100vh - 144px)", overflowY: "auto" }}>
+                <AdminPage />
+              </div>
+            } />
+            <Route path="*" element={<NotFound />} />
           </Routes>
-        </AuthProvider>
+          <ThemeToggle />
+        </div>
       </BrowserRouter>
     </TooltipProvider>
   </QueryClientProvider>

@@ -13,6 +13,8 @@ frontend/.vite/
 ml/data/
 ml/models/
 ml/venv/
+backend/models/*.pkl
+backend/models/tfidf_*.pkl
 
 # Claude worktrees
 .claude/

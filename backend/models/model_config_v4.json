@@ -1,0 +1,37 @@
+{
+  "features_num": [
+    "log_goal",
+    "duration_days",
+    "launch_month",
+    "launch_weekday",
+    "launch_year",
+    "name_length",
+    "main_category_enc",
+    "category_enc",
+    "country_enc",
+    "currency_enc",
+    "log_goal_per_day",
+    "is_us",
+    "is_weekend",
+    "log_duration",
+    "name_word_count",
+    "goal_x_duration",
+    "log_goal_sq",
+    "is_goal_round",
+    "goal_bucket",
+    "name_capital_ratio",
+    "name_digit_count",
+    "name_has_excl",
+    "name_has_colon"
+  ],
+  "cv_auc": 0.7786983742398078,
+  "cv_f1": 0.6572332153671022,
+  "cv_acc": 0.7063993367000829,
+  "n_train": 331675,
+  "train_date": "2026-05-27T01:59:10.622378",
+  "ensemble": "XGBoost + LightGBM soft-voting (Optuna 20 trial)",
+  "ensemble_weights": {
+    "xgb": 0.5,
+    "lgb": 0.5
+  }
+}

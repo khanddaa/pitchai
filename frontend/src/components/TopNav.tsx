@@ -109,7 +109,7 @@ export default function TopNav() {
     ["Үнэ",          false, "/pricing"],
   ];
 
-  const subTabs = ["Тойм", "Зөвлөмж", "Түүх"];
+  const subTabs = ["Тойм", "Зөвлөмж"];
   const activeTab = location.pathname === "/result" ? 1 : 0;
 
   return (
